@@ -112,38 +112,58 @@ function App() {
     }
   };
 
-  const pollGenerationStatus = () => {
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await api.get(`/api/datasets/${selectedDataset.id}`);
-        const updatedDataset = response.data;
+// Replace the existing pollGenerationStatus function with this corrected version
+const pollGenerationStatus = () => {
+  const pollInterval = setInterval(async () => {
+    if (!selectedDataset) {
+      clearInterval(pollInterval);
+      return;
+    }
 
-        setSelectedDataset(updatedDataset);
+    try {
+      const response = await api.get(`/api/datasets/${selectedDataset.id}`);
+      const updatedDataset = response.data;
 
-        // Update dataset in list
-        setDatasets(prev =>
-          prev.map(d => d.id === updatedDataset.id ? updatedDataset : d)
-        );
+      console.log('Polling status:', updatedDataset.status); // Debug log
 
-        if (updatedDataset.status === 'completed') {
-          clearInterval(pollInterval);
-          setCurrentStep('review');
-          setSuccess('Synthetic data generated successfully!');
-        } else if (updatedDataset.status === 'failed') {
-          clearInterval(pollInterval);
-          setCurrentStep('configure');
-          setError(`Generation failed: ${updatedDataset.error_message}`);
-        }
+      setSelectedDataset(updatedDataset);
 
-      } catch (err) {
-        console.error('Error polling status:', err);
+      // Update dataset in list
+      setDatasets(prev =>
+        prev.map(d => d.id === updatedDataset.id ? updatedDataset : d)
+      );
+
+      if (updatedDataset.status === 'completed') {
         clearInterval(pollInterval);
+        setCurrentStep('review');
+        setSuccess('Synthetic data generated successfully!');
+        setLoading(false);
+      } else if (updatedDataset.status === 'failed') {
+        clearInterval(pollInterval);
+        setCurrentStep('configure');
+        setError(`Generation failed: ${updatedDataset.error_message}`);
+        setLoading(false);
       }
-    }, 2000); // Poll every 2 seconds
 
-    // Clean up on component unmount
-    return () => clearInterval(pollInterval);
-  };
+    } catch (err) {
+      console.error('Error polling status:', err);
+      clearInterval(pollInterval);
+      setError('Error checking generation status');
+      setLoading(false);
+    }
+  }, 2000); // Poll every 2 seconds
+
+  // Cleanup after 5 minutes to prevent infinite polling
+  setTimeout(() => {
+    clearInterval(pollInterval);
+    if (selectedDataset?.status === 'processing') {
+      setError('Generation is taking longer than expected. Please refresh and try again.');
+      setLoading(false);
+    }
+  }, 300000); // 5 minutes timeout
+
+  return pollInterval;
+};
 
   const handleDownload = async () => {
     if (!selectedDataset) return;
