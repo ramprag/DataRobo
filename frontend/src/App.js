@@ -11,12 +11,24 @@ import QualityReport from './components/QualityReport';
 import DataPreview from './components/DataPreview';
 
 // API Configuration
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 60000, // Increased timeout for file uploads
+  headers: {
+    'Content-Type': 'application/json',
+  }
 });
+
+// Add response interceptor for better error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    console.error('API Error:', error.response?.data || error.message);
+    return Promise.reject(error);
+  }
+);
 
 function App() {
   const [datasets, setDatasets] = useState([]);
@@ -25,19 +37,38 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [pollIntervalRef, setPollIntervalRef] = useState(null);
 
   // Fetch datasets on component mount
   useEffect(() => {
     fetchDatasets();
+
+    // Cleanup polling on unmount
+    return () => {
+      if (pollIntervalRef) {
+        clearInterval(pollIntervalRef);
+      }
+    };
   }, []);
+
+  // Cleanup polling when dataset changes
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef) {
+        clearInterval(pollIntervalRef);
+        setPollIntervalRef(null);
+      }
+    };
+  }, [selectedDataset?.id]);
 
   const fetchDatasets = async () => {
     try {
       setLoading(true);
       const response = await api.get('/api/datasets');
-      setDatasets(response.data);
+      setDatasets(response.data || []);
     } catch (err) {
-      setError('Failed to fetch datasets: ' + err.message);
+      console.error('Failed to fetch datasets:', err);
+      setError('Failed to fetch datasets: ' + (err.response?.data?.detail || err.message));
     } finally {
       setLoading(false);
     }
@@ -47,14 +78,16 @@ function App() {
     try {
       setLoading(true);
       setError(null);
+      setSuccess(null);
 
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await api.post('/api/datasets/upload', formData, {
+      const response = await api.post('/api/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 120000, // 2 minutes for file upload
       });
 
       const newDataset = response.data;
@@ -64,24 +97,59 @@ function App() {
       setSuccess('Dataset uploaded successfully!');
 
     } catch (err) {
-      setError('Upload failed: ' + (err.response?.data?.detail || err.message));
+      console.error('Upload failed:', err);
+      const errorMessage = err.response?.data?.detail ||
+                          err.response?.data?.message ||
+                          err.message ||
+                          'Unknown upload error';
+      setError('Upload failed: ' + errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
   const handleDatasetSelect = async (dataset) => {
-    setSelectedDataset(dataset);
+    try {
+      setError(null);
+      setSuccess(null);
 
-    if (dataset.status === 'uploaded') {
+      // Clear any existing polling
+      if (pollIntervalRef) {
+        clearInterval(pollIntervalRef);
+        setPollIntervalRef(null);
+      }
+
+      // Fetch latest dataset status
+      const response = await api.get(`/api/datasets/${dataset.id}`);
+      const updatedDataset = response.data;
+
+      setSelectedDataset(updatedDataset);
+
+      // Set appropriate step based on status
+      switch (updatedDataset.status) {
+        case 'uploaded':
+          setCurrentStep('configure');
+          break;
+        case 'processing':
+          setCurrentStep('generate');
+          // Start polling for this dataset
+          pollGenerationStatus(updatedDataset.id);
+          break;
+        case 'completed':
+          setCurrentStep('review');
+          break;
+        case 'failed':
+          setCurrentStep('configure');
+          setError(`Previous generation failed: ${updatedDataset.error_message || 'Unknown error'}`);
+          break;
+        default:
+          setCurrentStep('configure');
+      }
+    } catch (err) {
+      console.error('Failed to select dataset:', err);
+      setError('Failed to load dataset details: ' + (err.response?.data?.detail || err.message));
+      setSelectedDataset(dataset); // Set it anyway to allow retry
       setCurrentStep('configure');
-    } else if (dataset.status === 'processing') {
-      setCurrentStep('generate');
-    } else if (dataset.status === 'completed') {
-      setCurrentStep('review');
-    } else if (dataset.status === 'failed') {
-      setCurrentStep('configure');
-      setError(`Previous generation failed: ${dataset.error_message}`);
     }
   };
 
@@ -91,6 +159,7 @@ function App() {
     try {
       setLoading(true);
       setError(null);
+      setSuccess(null);
       setCurrentStep('generate');
 
       const requestData = {
@@ -99,78 +168,105 @@ function App() {
         num_rows: numRows
       };
 
-      await api.post(`/api/datasets/${selectedDataset.id}/generate-synthetic`, requestData);
+      console.log('Sending generation request:', requestData);
+
+      const response = await api.post(`/api/datasets/${selectedDataset.id}/generate-synthetic`, requestData);
+
+      console.log('Generation request successful:', response.data);
+
+      // Update dataset status immediately
+      setSelectedDataset(prev => ({
+        ...prev,
+        status: 'processing',
+        privacy_config: privacyConfig
+      }));
 
       // Start polling for progress
-      pollGenerationStatus();
+      pollGenerationStatus(selectedDataset.id);
 
     } catch (err) {
-      setError('Failed to start generation: ' + (err.response?.data?.detail || err.message));
+      console.error('Failed to start generation:', err);
+      const errorMessage = err.response?.data?.detail ||
+                          err.response?.data?.message ||
+                          err.message ||
+                          'Unknown generation error';
+      setError('Failed to start generation: ' + errorMessage);
       setCurrentStep('configure');
     } finally {
       setLoading(false);
     }
   };
 
-// Replace the existing pollGenerationStatus function with this corrected version
-const pollGenerationStatus = () => {
-  const pollInterval = setInterval(async () => {
-    if (!selectedDataset) {
-      clearInterval(pollInterval);
-      return;
+  const pollGenerationStatus = (datasetId) => {
+    // Clear any existing polling
+    if (pollIntervalRef) {
+      clearInterval(pollIntervalRef);
     }
 
-    try {
-      const response = await api.get(`/api/datasets/${selectedDataset.id}`);
-      const updatedDataset = response.data;
+    let pollCount = 0;
+    const maxPolls = 150; // 5 minutes at 2-second intervals
 
-      console.log('Polling status:', updatedDataset.status); // Debug log
+    const intervalId = setInterval(async () => {
+      pollCount++;
 
-      setSelectedDataset(updatedDataset);
-
-      // Update dataset in list
-      setDatasets(prev =>
-        prev.map(d => d.id === updatedDataset.id ? updatedDataset : d)
-      );
-
-      if (updatedDataset.status === 'completed') {
-        clearInterval(pollInterval);
-        setCurrentStep('review');
-        setSuccess('Synthetic data generated successfully!');
+      if (pollCount > maxPolls) {
+        clearInterval(intervalId);
+        setPollIntervalRef(null);
+        setError('Generation is taking longer than expected. Please refresh and check status.');
         setLoading(false);
-      } else if (updatedDataset.status === 'failed') {
-        clearInterval(pollInterval);
-        setCurrentStep('configure');
-        setError(`Generation failed: ${updatedDataset.error_message}`);
-        setLoading(false);
+        return;
       }
 
-    } catch (err) {
-      console.error('Error polling status:', err);
-      clearInterval(pollInterval);
-      setError('Error checking generation status');
-      setLoading(false);
-    }
-  }, 2000); // Poll every 2 seconds
+      try {
+        const response = await api.get(`/api/datasets/${datasetId}`);
+        const updatedDataset = response.data;
 
-  // Cleanup after 5 minutes to prevent infinite polling
-  setTimeout(() => {
-    clearInterval(pollInterval);
-    if (selectedDataset?.status === 'processing') {
-      setError('Generation is taking longer than expected. Please refresh and try again.');
-      setLoading(false);
-    }
-  }, 300000); // 5 minutes timeout
+        console.log('Polling status:', updatedDataset.status, 'Poll count:', pollCount);
 
-  return pollInterval;
-};
+        setSelectedDataset(updatedDataset);
+
+        // Update dataset in list
+        setDatasets(prev =>
+          prev.map(d => d.id === updatedDataset.id ? updatedDataset : d)
+        );
+
+        if (updatedDataset.status === 'completed') {
+          clearInterval(intervalId);
+          setPollIntervalRef(null);
+          setCurrentStep('review');
+          setSuccess('Synthetic data generated successfully!');
+          setLoading(false);
+        } else if (updatedDataset.status === 'failed') {
+          clearInterval(intervalId);
+          setPollIntervalRef(null);
+          setCurrentStep('configure');
+          setError(`Generation failed: ${updatedDataset.error_message || 'Unknown error occurred during generation'}`);
+          setLoading(false);
+        }
+
+      } catch (err) {
+        console.error('Error polling status:', err);
+        if (pollCount > 3) { // Only show error after a few failed attempts
+          clearInterval(intervalId);
+          setPollIntervalRef(null);
+          setError('Error checking generation status: ' + (err.response?.data?.detail || err.message));
+          setLoading(false);
+        }
+      }
+    }, 2000); // Poll every 2 seconds
+
+    setPollIntervalRef(intervalId);
+  };
 
   const handleDownload = async () => {
     if (!selectedDataset) return;
 
     try {
+      setError(null);
+
       const response = await api.get(`/api/datasets/${selectedDataset.id}/download`, {
         responseType: 'blob',
+        timeout: 60000, // 1 minute timeout for download
       });
 
       // Create download link
@@ -178,7 +274,7 @@ const pollGenerationStatus = () => {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${selectedDataset.filename}_synthetic.csv`;
+      link.download = `${selectedDataset.filename.replace(/\.[^/.]+$/, '')}_synthetic.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -187,6 +283,7 @@ const pollGenerationStatus = () => {
       setSuccess('Synthetic data downloaded successfully!');
 
     } catch (err) {
+      console.error('Download failed:', err);
       setError('Download failed: ' + (err.response?.data?.detail || err.message));
     }
   };
@@ -201,11 +298,17 @@ const pollGenerationStatus = () => {
       if (selectedDataset?.id === datasetId) {
         setSelectedDataset(null);
         setCurrentStep('upload');
+        // Clear polling if active
+        if (pollIntervalRef) {
+          clearInterval(pollIntervalRef);
+          setPollIntervalRef(null);
+        }
       }
 
       setSuccess('Dataset deleted successfully!');
 
     } catch (err) {
+      console.error('Delete failed:', err);
       setError('Delete failed: ' + (err.response?.data?.detail || err.message));
     }
   };
@@ -270,7 +373,7 @@ const pollGenerationStatus = () => {
                 selectedDataset={selectedDataset}
                 onDatasetSelect={handleDatasetSelect}
                 onDatasetDelete={handleDeleteDataset}
-                loading={loading}
+                loading={loading && datasets.length === 0}
               />
             </aside>
 
@@ -297,9 +400,9 @@ const pollGenerationStatus = () => {
                   <div className="dataset-info">
                     <h3>Dataset: {selectedDataset.filename}</h3>
                     <div className="dataset-stats">
-                      <span>📊 {selectedDataset.row_count?.toLocaleString()} rows</span>
-                      <span>📋 {selectedDataset.column_count} columns</span>
-                      <span>💾 {(selectedDataset.file_size / 1024 / 1024).toFixed(2)} MB</span>
+                      <span>📊 {selectedDataset.row_count?.toLocaleString() || 'Unknown'} rows</span>
+                      <span>📋 {selectedDataset.column_count || 'Unknown'} columns</span>
+                      <span>💾 {selectedDataset.file_size ? (selectedDataset.file_size / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown size'}</span>
                     </div>
                   </div>
 

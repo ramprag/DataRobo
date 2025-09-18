@@ -15,21 +15,46 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customField, setCustomField] = useState('');
   const [dataPreview, setDataPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     // Load data preview to help user configure privacy settings
-    fetchDataPreview();
+    if (dataset?.id) {
+      fetchDataPreview();
+    }
   }, [dataset]);
 
   const fetchDataPreview = async () => {
+    if (!dataset?.id) return;
+
     try {
-      const response = await fetch(`/api/datasets/${dataset.id}/preview`);
+      setPreviewLoading(true);
+
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const url = `${apiUrl}/api/datasets/${dataset.id}/preview`;
+
+      console.log('Fetching data preview for privacy config from:', url);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+      });
+
       if (response.ok) {
         const preview = await response.json();
+        console.log('Privacy config preview data:', preview);
         setDataPreview(preview);
+      } else {
+        const errorText = await response.text();
+        console.error('Failed to fetch preview for privacy config:', response.status, errorText);
       }
     } catch (error) {
-      console.error('Failed to fetch data preview:', error);
+      console.error('Error fetching data preview for privacy config:', error);
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -59,7 +84,22 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const rows = numRows ? parseInt(numRows) : null;
+
+    // Validate configuration
+    if (!dataset) {
+      alert('No dataset selected');
+      return;
+    }
+
+    const rows = numRows ? parseInt(numRows, 10) : null;
+
+    // Validate number of rows
+    if (rows !== null && (isNaN(rows) || rows <= 0 || rows > 1000000)) {
+      alert('Number of rows must be between 1 and 1,000,000');
+      return;
+    }
+
+    console.log('Submitting privacy config:', config, 'rows:', rows);
     onSubmit(config, rows);
   };
 
@@ -72,32 +112,42 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
       config.mask_ssn
     ].filter(Boolean).length;
 
-    if (enabledMasks >= 4) return { level: 'High', color: 'green' };
-    if (enabledMasks >= 2) return { level: 'Medium', color: 'orange' };
+    const customFieldCount = config.custom_fields.length;
+    const totalMasks = enabledMasks + customFieldCount;
+
+    if (totalMasks >= 4) return { level: 'High', color: 'green' };
+    if (totalMasks >= 2) return { level: 'Medium', color: 'orange' };
     return { level: 'Low', color: 'red' };
   };
 
   const privacyLevel = getPrivacyLevel();
 
   const detectPotentialPII = (columns) => {
+    if (!columns || !Array.isArray(columns)) return [];
+
     const piiSuggestions = [];
 
     columns.forEach(col => {
-      const colLower = col.toLowerCase();
+      if (!col || typeof col !== 'string') return;
 
-      if (colLower.includes('email') || colLower.includes('mail')) {
+      const colLower = col.toLowerCase().replace(/[^a-z]/g, '');
+
+      if (colLower.includes('email') || colLower.includes('mail') || colLower.includes('eml')) {
         piiSuggestions.push({ column: col, type: 'Email', suggested: config.mask_emails });
       }
-      if (colLower.includes('name') || colLower.includes('firstname') || colLower.includes('lastname')) {
+      if (colLower.includes('name') || colLower.includes('firstname') || colLower.includes('lastname') ||
+          colLower.includes('fullname') || colLower.includes('nm')) {
         piiSuggestions.push({ column: col, type: 'Name', suggested: config.mask_names });
       }
-      if (colLower.includes('phone') || colLower.includes('mobile') || colLower.includes('telephone')) {
+      if (colLower.includes('phone') || colLower.includes('mobile') || colLower.includes('telephone') ||
+          colLower.includes('tel') || colLower.includes('cell')) {
         piiSuggestions.push({ column: col, type: 'Phone', suggested: config.mask_phone_numbers });
       }
-      if (colLower.includes('address') || colLower.includes('street') || colLower.includes('city')) {
+      if (colLower.includes('address') || colLower.includes('street') || colLower.includes('city') ||
+          colLower.includes('state') || colLower.includes('zip') || colLower.includes('postal')) {
         piiSuggestions.push({ column: col, type: 'Address', suggested: config.mask_addresses });
       }
-      if (colLower.includes('ssn') || colLower.includes('social')) {
+      if (colLower.includes('ssn') || colLower.includes('social') || colLower.includes('taxid')) {
         piiSuggestions.push({ column: col, type: 'SSN', suggested: config.mask_ssn });
       }
     });
@@ -200,11 +250,16 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
       </div>
 
       {/* PII Detection Results */}
-      {dataPreview && (
-        <div className="config-section">
-          <h4>🔍 Detected Potential PII Fields</h4>
-          <div className="pii-detection">
-            {detectPotentialPII(dataPreview.columns).length > 0 ? (
+      <div className="config-section">
+        <h4>🔍 Detected Potential PII Fields</h4>
+        <div className="pii-detection">
+          {previewLoading ? (
+            <div style={{ textAlign: 'center', padding: '2rem' }}>
+              <span className="spinner"></span>
+              <p>Analyzing columns for PII...</p>
+            </div>
+          ) : dataPreview?.columns ? (
+            detectPotentialPII(dataPreview.columns).length > 0 ? (
               <div className="pii-suggestions">
                 {detectPotentialPII(dataPreview.columns).map((suggestion, index) => (
                   <div key={index} className={`pii-suggestion ${suggestion.suggested ? 'protected' : 'unprotected'}`}>
@@ -218,10 +273,12 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
               </div>
             ) : (
               <p className="no-pii">No obvious PII fields detected. You may want to review your data manually.</p>
-            )}
-          </div>
+            )
+          ) : (
+            <p className="no-pii">Unable to analyze columns. Please check if your dataset loaded correctly.</p>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Advanced Options */}
       <div className="config-section">
@@ -268,11 +325,17 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
                     placeholder="Enter column name"
                     className="form-control"
                     list="available-columns"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addCustomField();
+                      }
+                    }}
                   />
-                  {dataPreview && (
+                  {dataPreview?.columns && (
                     <datalist id="available-columns">
-                      {dataPreview.columns.map(col => (
-                        <option key={col} value={col} />
+                      {dataPreview.columns.map((col, idx) => (
+                        <option key={idx} value={col} />
                       ))}
                     </datalist>
                   )}
@@ -280,7 +343,7 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
                     type="button"
                     onClick={addCustomField}
                     className="btn btn-secondary"
-                    disabled={!customField}
+                    disabled={!customField.trim()}
                   >
                     Add
                   </button>
@@ -288,13 +351,14 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
 
                 {config.custom_fields.length > 0 && (
                   <div className="custom-field-list">
-                    {config.custom_fields.map(field => (
-                      <div key={field} className="custom-field-tag">
+                    {config.custom_fields.map((field, idx) => (
+                      <div key={idx} className="custom-field-tag">
                         <span>{field}</span>
                         <button
                           type="button"
                           onClick={() => removeCustomField(field)}
                           className="remove-field"
+                          title="Remove field"
                         >
                           ×
                         </button>
@@ -303,6 +367,9 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
                   </div>
                 )}
               </div>
+              <small className="form-help">
+                Add specific column names that should be masked but weren't auto-detected
+              </small>
             </div>
 
             {/* Number of Rows */}
@@ -313,13 +380,13 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
                 type="number"
                 value={numRows}
                 onChange={(e) => setNumRows(e.target.value)}
-                placeholder={`Default: ${dataset.row_count?.toLocaleString() || 'Same as original'}`}
+                placeholder={`Default: ${dataset?.row_count?.toLocaleString() || 'Same as original'}`}
                 min="1"
                 max="1000000"
                 className="form-control"
               />
               <small className="form-help">
-                Leave empty to generate the same number of rows as the original dataset
+                Leave empty to generate the same number of rows as the original dataset ({dataset?.row_count?.toLocaleString() || 'unknown'} rows)
               </small>
             </div>
           </div>
@@ -331,7 +398,7 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
         <button
           type="submit"
           className="btn btn-primary btn-large"
-          disabled={loading}
+          disabled={loading || !dataset}
         >
           {loading ? (
             <>
@@ -346,7 +413,7 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
         <div className="generation-info">
           <p>
             📈 Will generate <strong>
-              {numRows || dataset.row_count?.toLocaleString() || 'unknown'}
+              {numRows || dataset?.row_count?.toLocaleString() || 'unknown'}
             </strong> rows of synthetic data
           </p>
           <p>
@@ -354,6 +421,11 @@ const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
               {privacyLevel.level}
             </strong>
           </p>
+          {config.custom_fields.length > 0 && (
+            <p>
+              📝 Custom fields to mask: <strong>{config.custom_fields.length}</strong>
+            </p>
+          )}
         </div>
       </div>
 

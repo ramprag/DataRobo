@@ -17,21 +17,57 @@ const DataPreview = ({ datasetId, title, synthetic = false }) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(
-        `/api/datasets/${datasetId}/preview?synthetic=${synthetic}`
-      );
+      // Use relative URL that will work with the proxy
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const url = `${apiUrl}/api/datasets/${datasetId}/preview?synthetic=${synthetic}`;
 
-      if (response.ok) {
-        const data = await response.json();
-        setPreviewData(data);
-      } else {
-        throw new Error('Failed to load preview');
+      console.log('Fetching preview from:', url);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Preview fetch failed:', response.status, errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText || 'Failed to load preview'}`);
       }
+
+      const data = await response.json();
+      console.log('Preview data received:', data);
+      setPreviewData(data);
     } catch (err) {
-      setError(err.message);
+      console.error('Failed to fetch preview:', err);
+      setError(err.message || 'Failed to load preview');
     } finally {
       setLoading(false);
     }
+  };
+
+  const renderTableData = (data) => {
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return (
+        <tr>
+          <td colSpan={previewData?.columns?.length || 1} style={{ textAlign: 'center', padding: '2rem' }}>
+            No data available
+          </td>
+        </tr>
+      );
+    }
+
+    return data.map((row, index) => (
+      <tr key={index}>
+        {previewData.columns?.map((column, colIndex) => (
+          <td key={colIndex} title={String(row[column] || '—')}>
+            {String(row[column] || '—')}
+          </td>
+        ))}
+      </tr>
+    ));
   };
 
   if (loading) {
@@ -53,6 +89,13 @@ const DataPreview = ({ datasetId, title, synthetic = false }) => {
         <div className="error-message">
           <span className="error-icon">❌</span>
           <p>{error}</p>
+          <button
+            onClick={fetchPreview}
+            className="btn btn-text"
+            style={{ marginTop: '0.5rem' }}
+          >
+            🔄 Retry
+          </button>
         </div>
       </div>
     );
@@ -72,8 +115,8 @@ const DataPreview = ({ datasetId, title, synthetic = false }) => {
       <div className="preview-header">
         <h4>{title}</h4>
         <div className="preview-stats">
-          <span>📊 {previewData.total_rows?.toLocaleString()} total rows</span>
-          <span>👁️ Showing {previewData.preview_rows} rows</span>
+          <span>📊 {previewData.total_rows?.toLocaleString() || 'Unknown'} total rows</span>
+          <span>👁️ Showing {previewData.preview_rows || previewData.data?.length || 0} rows</span>
         </div>
       </div>
 
@@ -83,22 +126,22 @@ const DataPreview = ({ datasetId, title, synthetic = false }) => {
             <tr>
               {previewData.columns?.map((column, index) => (
                 <th key={index}>{column}</th>
-              ))}
+              )) || (
+                <th>No columns available</th>
+              )}
             </tr>
           </thead>
           <tbody>
-            {previewData.data?.map((row, index) => (
-              <tr key={index}>
-                {previewData.columns?.map((column, colIndex) => (
-                  <td key={colIndex} title={row[column]}>
-                    {String(row[column] || '—')}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {renderTableData(previewData.data)}
           </tbody>
         </table>
       </div>
+
+      {previewData.data && previewData.data.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', fontStyle: 'italic' }}>
+          No data rows available in this dataset
+        </div>
+      )}
     </div>
   );
 };
