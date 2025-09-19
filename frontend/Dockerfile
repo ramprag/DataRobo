@@ -8,15 +8,14 @@ WORKDIR /app
 COPY package*.json ./
 #COPY /backend/requirements.txt ./requirements.txt
 
-# Install dependencies
-#RUN npm ci --only=production
+# Install all dependencies based on the lock file.
+# This is done before copying the source code to optimize Docker's layer caching.
+RUN npm install
 
-# Copy source code
+# Now copy the rest of the application's source code.
 COPY . .
 
 # Build the application
-#RUN npm install
-Run npm install react-scripts@latest
 RUN npm run build
 
 # Production stage with nginx

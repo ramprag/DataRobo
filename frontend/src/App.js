@@ -8,8 +8,8 @@ import DatasetList from './components/DatasetList';
 import PrivacyConfig from './components/PrivacyConfig';
 import GenerationProgress from './components/GenerationProgress';
 import QualityReport from './components/QualityReport';
+import DebugPanel from './components/DebugPanel';
 import DataPreview from './components/DataPreview';
-
 // API Configuration
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
@@ -110,46 +110,65 @@ function App() {
 
   const handleDatasetSelect = async (dataset) => {
     try {
+      console.log('Dataset selection started for:', dataset.id, 'Status:', dataset.status);
       setError(null);
       setSuccess(null);
 
       // Clear any existing polling
       if (pollIntervalRef) {
+        console.log('Clearing existing polling interval');
         clearInterval(pollIntervalRef);
         setPollIntervalRef(null);
       }
 
       // Fetch latest dataset status
+      console.log('Fetching latest dataset status...');
       const response = await api.get(`/api/datasets/${dataset.id}`);
       const updatedDataset = response.data;
 
+      console.log('Latest dataset status:', updatedDataset.status);
       setSelectedDataset(updatedDataset);
 
       // Set appropriate step based on status
       switch (updatedDataset.status) {
         case 'uploaded':
+          console.log('Dataset is uploaded, going to configure step');
           setCurrentStep('configure');
           break;
+
         case 'processing':
+          console.log('Dataset is processing, going to generate step and starting polling');
           setCurrentStep('generate');
+          setLoading(true); // Set loading state for processing
           // Start polling for this dataset
           pollGenerationStatus(updatedDataset.id);
           break;
+
         case 'completed':
+          console.log('Dataset is completed, going to review step');
           setCurrentStep('review');
+          setLoading(false);
+          setSuccess('Synthetic data is ready for review!');
           break;
+
         case 'failed':
+          console.log('Dataset failed, going to configure step with error');
           setCurrentStep('configure');
+          setLoading(false);
           setError(`Previous generation failed: ${updatedDataset.error_message || 'Unknown error'}`);
           break;
+
         default:
+          console.log('Unknown status, defaulting to configure step');
           setCurrentStep('configure');
+          setLoading(false);
       }
     } catch (err) {
       console.error('Failed to select dataset:', err);
       setError('Failed to load dataset details: ' + (err.response?.data?.detail || err.message));
       setSelectedDataset(dataset); // Set it anyway to allow retry
       setCurrentStep('configure');
+      setLoading(false);
     }
   };
 
@@ -472,6 +491,7 @@ function App() {
                   {/* Quality Report */}
                   {selectedDataset.quality_metrics && (
                     <QualityReport
+                      dataset={selectedDataset}
                       qualityMetrics={selectedDataset.quality_metrics}
                       privacyConfig={selectedDataset.privacy_config}
                     />
@@ -489,6 +509,15 @@ function App() {
           <p>&copy; 2024 Synthetic Data Generator. Built with privacy and security in mind.</p>
         </div>
       </footer>
+
+      {/* Debug Panel - only shows in development */}
+      <DebugPanel
+        selectedDataset={selectedDataset}
+        currentStep={currentStep}
+        loading={loading}
+        error={error}
+        success={success}
+      />
     </div>
   );
 }

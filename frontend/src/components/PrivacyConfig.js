@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './PrivacyConfig.css';
 
-const PrivacyConfig = ({ dataset, onSubmit, loading }) => {
+const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
   const [config, setConfig] = useState({
     mask_emails: true,
     mask_names: true,

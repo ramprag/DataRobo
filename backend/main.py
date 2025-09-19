@@ -3,30 +3,43 @@ import uuid
 import pandas as pd
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 import asyncio
 import time
+import logging
+import traceback
+
+# Import our custom classes
+from privacy_masker import PrivacyMasker
+from synthetic_generator import SyntheticDataGenerator
+from quality_validator import QualityValidator
+from data_processor import DataProcessor
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Create directories
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("synthetic", exist_ok=True)
+os.makedirs("logs", exist_ok=True)
 
 app = FastAPI(title="Synthetic Data Generator API", version="1.0.0")
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory storage for datasets (THIS WAS MISSING!)
+# In-memory storage for datasets
 datasets_db = {}
 
 class DatasetResponse(BaseModel):
@@ -39,6 +52,7 @@ class DatasetResponse(BaseModel):
     file_size: Optional[int] = None
     error_message: Optional[str] = None
     quality_metrics: Optional[Dict[str, Any]] = None
+    privacy_config: Optional[Dict[str, Any]] = None
 
 class PrivacyConfig(BaseModel):
     mask_emails: bool = True
@@ -62,12 +76,18 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
-@app.post("/api/datasets/upload", response_model=DatasetResponse)
+@app.post("/api/upload", response_model=DatasetResponse)
 async def upload_dataset(file: UploadFile = File(...)):
+    """Upload dataset endpoint - matches frontend expectation"""
     try:
+        logger.info(f"Upload request received for file: {file.filename}")
+
         # Validate file type
-        if not file.filename.lower().endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files are supported")
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+
+        if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls')):
+            raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
 
         # Generate unique ID
         file_id = str(uuid.uuid4())
@@ -76,22 +96,40 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         # Save file
         content = await file.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
         with open(file_path, "wb") as f:
             f.write(content)
 
+        logger.info(f"File saved to: {file_path}")
+
         # Analyze file
         try:
-            df = pd.read_csv(file_path)
+            # Use DataProcessor for better file handling
+            data_processor = DataProcessor()
+
+            if file.filename.lower().endswith('.csv'):
+                df = data_processor.load_csv(file_path)
+            else:
+                df = pd.read_excel(file_path)
+
             row_count = len(df)
             column_count = len(df.columns)
 
             if row_count == 0:
-                raise ValueError("CSV file is empty")
+                raise ValueError("Dataset is empty")
+
+            if column_count == 0:
+                raise ValueError("Dataset has no columns")
+
+            logger.info(f"Dataset analyzed: {row_count} rows, {column_count} columns")
 
         except Exception as e:
+            logger.error(f"Error analyzing file: {e}")
             if os.path.exists(file_path):
                 os.remove(file_path)
-            raise HTTPException(status_code=400, detail=f"Invalid CSV file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
         # Store in memory database
         dataset = {
@@ -104,22 +142,31 @@ async def upload_dataset(file: UploadFile = File(...)):
             "file_size": len(content),
             "created_at": datetime.utcnow().isoformat(),
             "error_message": None,
-            "quality_metrics": None
+            "quality_metrics": None,
+            "privacy_config": None
         }
 
         datasets_db[file_id] = dataset
-        print(f"Dataset uploaded: {file_id}, Status: {dataset['status']}")
+        logger.info(f"Dataset stored with ID: {file_id}")
 
         return DatasetResponse(**dataset)
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Upload error: {e}")
+        logger.error(f"Unexpected upload error: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@app.post("/api/datasets/upload", response_model=DatasetResponse)
+async def upload_dataset_legacy(file: UploadFile = File(...)):
+    """Legacy upload endpoint for backwards compatibility"""
+    return await upload_dataset(file)
 
 @app.get("/api/datasets/{dataset_id}", response_model=DatasetResponse)
 async def get_dataset(dataset_id: str):
+    logger.info(f"Getting dataset: {dataset_id}")
+
     if dataset_id not in datasets_db:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -128,99 +175,60 @@ async def get_dataset(dataset_id: str):
 
 @app.get("/api/datasets", response_model=List[DatasetResponse])
 async def list_datasets():
+    logger.info("Listing all datasets")
     datasets_list = []
     for dataset in datasets_db.values():
         datasets_list.append(DatasetResponse(**dataset))
     return datasets_list
 
 async def generate_synthetic_data_background(dataset_id: str, privacy_config: PrivacyConfig, num_rows: Optional[int] = None):
-    """Background task to generate synthetic data"""
+    """Background task to generate synthetic data with proper error handling"""
     try:
-        print(f"Starting background generation for dataset: {dataset_id}")
+        logger.info(f"Starting synthetic data generation for dataset: {dataset_id}")
 
-        # Set status to processing
+        # Verify dataset exists
         if dataset_id not in datasets_db:
-            print(f"Dataset {dataset_id} not found in background task")
+            logger.error(f"Dataset {dataset_id} not found in background task")
             return
 
         dataset = datasets_db[dataset_id]
         datasets_db[dataset_id]["status"] = "processing"
-        print(f"Dataset {dataset_id} status set to processing")
+        logger.info(f"Dataset {dataset_id} status set to processing")
 
-        # Simulate some processing time
+        # Load original data
+        original_df = pd.read_csv(dataset["file_path"])
+        logger.info(f"Loaded original data: {len(original_df)} rows, {len(original_df.columns)} columns")
+
+        # Step 1: Apply privacy masking
+        logger.info("Step 1: Applying privacy masks...")
+        await asyncio.sleep(1)  # Simulate processing time
+
+        privacy_masker = PrivacyMasker()
+        masked_df = privacy_masker.apply_privacy_masks(original_df, privacy_config)
+        logger.info("Privacy masking completed")
+
+        # Step 2: Generate synthetic data
+        logger.info("Step 2: Generating synthetic data...")
         await asyncio.sleep(2)
 
-        # Load and process data
-        df = pd.read_csv(dataset["file_path"])
-        print(f"Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+        synthetic_generator = SyntheticDataGenerator(method="statistical")
+        target_rows = num_rows if num_rows else len(original_df)
+        synthetic_df = synthetic_generator.generate_synthetic_data(masked_df, target_rows)
+        logger.info(f"Synthetic data generated: {len(synthetic_df)} rows")
 
-        # Create synthetic version
-        synthetic_df = df.copy()
+        # Step 3: Quality validation
+        logger.info("Step 3: Validating quality...")
+        await asyncio.sleep(1)
 
-        # Apply privacy masking based on config
-        if privacy_config.mask_emails:
-            for col in df.columns:
-                if 'email' in col.lower() or '@' in str(df[col].iloc[0] if len(df) > 0 else ''):
-                    synthetic_df[col] = synthetic_df[col].apply(
-                        lambda x: f"user{abs(hash(str(x))) % 1000}@example.com" if pd.notna(x) and '@' in str(x) else x
-                    )
+        quality_validator = QualityValidator()
+        quality_metrics = quality_validator.compare_distributions(original_df, synthetic_df)
+        logger.info("Quality validation completed")
 
-        if privacy_config.mask_names:
-            for col in df.columns:
-                if any(name_word in col.lower() for name_word in ['name', 'first', 'last']):
-                    synthetic_df[col] = synthetic_df[col].apply(
-                        lambda x: f"User_{abs(hash(str(x))) % 1000}" if pd.notna(x) else x
-                    )
-
-        if privacy_config.mask_phone_numbers:
-            for col in df.columns:
-                if 'phone' in col.lower() or 'mobile' in col.lower():
-                    synthetic_df[col] = synthetic_df[col].apply(
-                        lambda x: f"+1-555-{abs(hash(str(x))) % 9000 + 1000}" if pd.notna(x) else x
-                    )
-
-        # Apply custom field masking
-        for field in privacy_config.custom_fields:
-            if field in synthetic_df.columns:
-                synthetic_df[field] = synthetic_df[field].apply(
-                    lambda x: f"MASKED_{abs(hash(str(x))) % 1000}" if pd.notna(x) else x
-                )
-
-        # Adjust number of rows if specified
-        if num_rows and num_rows != len(synthetic_df):
-            if num_rows > len(synthetic_df):
-                # Duplicate rows to reach target
-                multiplier = num_rows // len(synthetic_df) + 1
-                synthetic_df = pd.concat([synthetic_df] * multiplier, ignore_index=True)
-                synthetic_df = synthetic_df.head(num_rows)
-            else:
-                # Sample rows to reach target
-                synthetic_df = synthetic_df.sample(n=num_rows, random_state=42).reset_index(drop=True)
-
-        # Save synthetic data
+        # Step 4: Save synthetic data
+        logger.info("Step 4: Saving synthetic data...")
         synthetic_path = f"synthetic/{dataset_id}_synthetic.csv"
         synthetic_df.to_csv(synthetic_path, index=False)
-        print(f"Synthetic data saved to: {synthetic_path}")
-
-        # Calculate basic quality metrics
-        quality_metrics = {
-            "overall_quality_score": 85.5,
-            "data_shape": {
-                "original_shape": [len(df), len(df.columns)],
-                "synthetic_shape": [len(synthetic_df), len(synthetic_df.columns)]
-            },
-            "column_comparisons": {},
-            "statistical_tests": {},
-            "data_utility_metrics": {
-                "data_completeness": {
-                    "original_completeness": float((1 - df.isnull().mean().mean()) * 100),
-                    "synthetic_completeness": float((1 - synthetic_df.isnull().mean().mean()) * 100)
-                }
-            },
-            "recommendations": [
-                "Good data quality achieved. The synthetic data preserves most statistical properties."
-            ]
-        }
+        logger.info(f"Synthetic data saved to: {synthetic_path}")
 
         # Update dataset with completion
         datasets_db[dataset_id].update({
@@ -230,10 +238,12 @@ async def generate_synthetic_data_background(dataset_id: str, privacy_config: Pr
             "privacy_config": privacy_config.dict()
         })
 
-        print(f"Dataset {dataset_id} generation completed successfully")
+        logger.info(f"Dataset {dataset_id} generation completed successfully")
 
     except Exception as e:
-        print(f"Error in background generation for dataset {dataset_id}: {e}")
+        logger.error(f"Error in background generation for dataset {dataset_id}: {e}")
+        logger.error(traceback.format_exc())
+
         if dataset_id in datasets_db:
             datasets_db[dataset_id]["status"] = "failed"
             datasets_db[dataset_id]["error_message"] = str(e)
@@ -242,46 +252,70 @@ async def generate_synthetic_data_background(dataset_id: str, privacy_config: Pr
 async def generate_synthetic_data(
         dataset_id: str,
         background_tasks: BackgroundTasks,
-        request: Optional[GenerateSyntheticRequest] = None
+        request: Request
 ):
-    print(f"Generate synthetic data requested for dataset: {dataset_id}")
+    """Generate synthetic data endpoint with proper request handling"""
+    try:
+        logger.info(f"Generate synthetic data requested for dataset: {dataset_id}")
 
-    if dataset_id not in datasets_db:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+        if dataset_id not in datasets_db:
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
-    dataset = datasets_db[dataset_id]
+        dataset = datasets_db[dataset_id]
 
-    if dataset["status"] == "processing":
-        raise HTTPException(status_code=400, detail="Dataset is already being processed")
+        if dataset["status"] == "processing":
+            raise HTTPException(status_code=400, detail="Dataset is already being processed")
 
-    # Use default privacy config if none provided
-    if request is None:
-        privacy_config = PrivacyConfig()
-        num_rows = None
-    else:
-        privacy_config = request.privacy_config
-        num_rows = request.num_rows
+        # Parse request body
+        try:
+            body = await request.json()
+            logger.info(f"Request body: {body}")
 
-    # Start background task
-    background_tasks.add_task(
-        generate_synthetic_data_background,
-        dataset_id,
-        privacy_config,
-        num_rows
-    )
+            # Extract privacy config and num_rows
+            privacy_config_data = body.get("privacy_config", {})
+            num_rows = body.get("num_rows")
 
-    print(f"Background task started for dataset: {dataset_id}")
-    return {"message": "Synthetic data generation started", "dataset_id": dataset_id}
+            # Create PrivacyConfig object
+            privacy_config = PrivacyConfig(**privacy_config_data)
+
+        except Exception as e:
+            logger.error(f"Error parsing request body: {e}")
+            # Use default config if parsing fails
+            privacy_config = PrivacyConfig()
+            num_rows = None
+
+        logger.info(f"Using privacy config: {privacy_config.dict()}")
+        logger.info(f"Target rows: {num_rows}")
+
+        # Start background task
+        background_tasks.add_task(
+            generate_synthetic_data_background,
+            dataset_id,
+            privacy_config,
+            num_rows
+        )
+
+        logger.info(f"Background task started for dataset: {dataset_id}")
+        return {"message": "Synthetic data generation started", "dataset_id": dataset_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting generation: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
 
 @app.get("/api/datasets/{dataset_id}/download")
 async def download_synthetic_data(dataset_id: str):
+    logger.info(f"Download requested for dataset: {dataset_id}")
+
     if dataset_id not in datasets_db:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     dataset = datasets_db[dataset_id]
 
     if dataset["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Synthetic data not ready for download")
+        raise HTTPException(status_code=400, detail=f"Synthetic data not ready. Status: {dataset['status']}")
 
     if "synthetic_path" not in dataset or not os.path.exists(dataset["synthetic_path"]):
         raise HTTPException(status_code=404, detail="Synthetic data file not found")
@@ -294,6 +328,8 @@ async def download_synthetic_data(dataset_id: str):
 
 @app.get("/api/datasets/{dataset_id}/preview")
 async def preview_data(dataset_id: str, synthetic: bool = False):
+    logger.info(f"Preview requested for dataset: {dataset_id}, synthetic: {synthetic}")
+
     if dataset_id not in datasets_db:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -305,24 +341,34 @@ async def preview_data(dataset_id: str, synthetic: bool = False):
                 raise HTTPException(status_code=404, detail="Synthetic data not found")
             df = pd.read_csv(dataset["synthetic_path"])
         else:
+            if not os.path.exists(dataset["file_path"]):
+                raise HTTPException(status_code=404, detail="Original data file not found")
             df = pd.read_csv(dataset["file_path"])
 
         # Return first 5 rows for preview
         preview_df = df.head(5)
 
-        return {
+        response = {
             "columns": df.columns.tolist(),
             "data": preview_df.to_dict('records'),
             "total_rows": len(df),
             "preview_rows": len(preview_df)
         }
 
+        logger.info(f"Preview data prepared: {len(response['data'])} rows, {len(response['columns'])} columns")
+        return response
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error previewing data: {e}")
+        logger.error(f"Error previewing data: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error loading data preview: {str(e)}")
 
 @app.delete("/api/datasets/{dataset_id}")
 async def delete_dataset(dataset_id: str):
+    logger.info(f"Delete requested for dataset: {dataset_id}")
+
     if dataset_id not in datasets_db:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -332,15 +378,31 @@ async def delete_dataset(dataset_id: str):
     try:
         if os.path.exists(dataset["file_path"]):
             os.remove(dataset["file_path"])
+            logger.info(f"Deleted original file: {dataset['file_path']}")
+
         if "synthetic_path" in dataset and os.path.exists(dataset["synthetic_path"]):
             os.remove(dataset["synthetic_path"])
+            logger.info(f"Deleted synthetic file: {dataset['synthetic_path']}")
+
     except Exception as e:
-        print(f"Warning: Error deleting files for dataset {dataset_id}: {e}")
+        logger.warning(f"Error deleting files for dataset {dataset_id}: {e}")
 
     # Remove from memory database
     del datasets_db[dataset_id]
+    logger.info(f"Dataset {dataset_id} deleted from database")
 
     return {"message": "Dataset deleted successfully"}
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler for better error reporting"""
+    logger.error(f"Global exception: {exc}")
+    logger.error(traceback.format_exc())
+
+    return HTTPException(
+        status_code=500,
+        detail=f"Internal server error: {str(exc)}"
+    )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './QualityReport.css';
 
-const QualityReport = ({ qualityMetrics, privacyConfig }) => {
+const QualityReport = ({ dataset = {}, qualityMetrics, privacyConfig }) => {
   const [activeTab, setActiveTab] = useState('overview');
 
   if (!qualityMetrics) {
@@ -65,8 +65,9 @@ const QualityReport = ({ qualityMetrics, privacyConfig }) => {
               <div className="metric-card">
                 <h4>📏 Data Dimensions</h4>
                 <div className="metric-value">
-                  {qualityMetrics.data_shape?.original_shape?.[0]?.toLocaleString() || '—'} rows × {' '}
-                  {qualityMetrics.data_shape?.original_shape?.[1] || '—'} columns
+                  {/* Use dataset.row_count as a fallback for original rows */}
+                  {(qualityMetrics.data_shape?.original_shape?.[0] || dataset?.row_count)?.toLocaleString() || '—'} rows × {' '}
+                  {(qualityMetrics.data_shape?.original_shape?.[1] || dataset?.column_count) || '—'} columns
                 </div>
                 <div className="metric-comparison">
                   Synthetic: {qualityMetrics.data_shape?.synthetic_shape?.[0]?.toLocaleString() || '—'} rows × {' '}
