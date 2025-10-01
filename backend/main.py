@@ -18,6 +18,8 @@ from privacy_masker import PrivacyMasker
 from synthetic_generator import SyntheticDataGenerator
 from quality_validator import QualityValidator
 from data_processor import DataProcessor
+from multi_table_processor import EnhancedSyntheticDataGenerator
+from fastapi.responses import StreamingResponse
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +50,7 @@ class DatasetResponse(BaseModel):
     status: str
     row_count: Optional[int] = None
     column_count: Optional[int] = None
+    table_count: Optional[int] = 1  # NEW
     created_at: str
     file_size: Optional[int] = None
     error_message: Optional[str] = None
@@ -78,23 +81,20 @@ async def health_check():
 
 @app.post("/api/upload", response_model=DatasetResponse)
 async def upload_dataset(file: UploadFile = File(...)):
-    """Upload dataset endpoint - matches frontend expectation"""
+    """Upload dataset endpoint - supports CSV, Excel, and ZIP files"""
     try:
         logger.info(f"Upload request received for file: {file.filename}")
 
-        # Validate file type
         if not file.filename:
             raise HTTPException(status_code=400, detail="No filename provided")
 
-        if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls')):
-            raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+        if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls', '.zip')):
+            raise HTTPException(status_code=400, detail="Only CSV, Excel, and ZIP files are supported")
 
-        # Generate unique ID
         file_id = str(uuid.uuid4())
         safe_filename = file.filename.replace(" ", "_")
         file_path = f"uploads/{file_id}_{safe_filename}"
 
-        # Save file
         content = await file.read()
         if len(content) == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
@@ -104,9 +104,19 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         logger.info(f"File saved to: {file_path}")
 
-        # Analyze file
-        try:
-            # Use DataProcessor for better file handling
+        # For ZIP files, analyze content
+        if file.filename.lower().endswith('.zip'):
+            enhanced_generator = EnhancedSyntheticDataGenerator()
+            tables = enhanced_generator._extract_tables(content, file.filename)
+
+            total_rows = sum(len(df) for df in tables.values())
+            total_columns = sum(len(df.columns) for df in tables.values())
+            table_count = len(tables)
+
+            logger.info(f"ZIP contains {table_count} tables with {total_rows} total rows")
+        else:
+            # Single file analysis
+            from data_processor import DataProcessor
             data_processor = DataProcessor()
 
             if file.filename.lower().endswith('.csv'):
@@ -114,32 +124,19 @@ async def upload_dataset(file: UploadFile = File(...)):
             else:
                 df = pd.read_excel(file_path)
 
-            row_count = len(df)
-            column_count = len(df.columns)
+            total_rows = len(df)
+            total_columns = len(df.columns)
+            table_count = 1
 
-            if row_count == 0:
-                raise ValueError("Dataset is empty")
-
-            if column_count == 0:
-                raise ValueError("Dataset has no columns")
-
-            logger.info(f"Dataset analyzed: {row_count} rows, {column_count} columns")
-
-        except Exception as e:
-            logger.error(f"Error analyzing file: {e}")
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
-
-        # Store in memory database
         dataset = {
             "id": file_id,
             "filename": safe_filename,
             "status": "uploaded",
             "file_path": file_path,
-            "row_count": row_count,
-            "column_count": column_count,
+            "row_count": total_rows,
+            "column_count": total_columns,
             "file_size": len(content),
+            "table_count": table_count,
             "created_at": datetime.utcnow().isoformat(),
             "error_message": None,
             "quality_metrics": None,
@@ -155,7 +152,6 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"Unexpected upload error: {e}")
-        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.post("/api/datasets/upload", response_model=DatasetResponse)
@@ -181,69 +177,48 @@ async def list_datasets():
         datasets_list.append(DatasetResponse(**dataset))
     return datasets_list
 
-async def generate_synthetic_data_background(dataset_id: str, privacy_config: PrivacyConfig, num_rows: Optional[int] = None):
-    """Background task to generate synthetic data with proper error handling"""
+async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_config: PrivacyConfig, num_rows: Optional[int] = None):
+    """Enhanced background task for multi-table support"""
     try:
-        logger.info(f"Starting synthetic data generation for dataset: {dataset_id}")
+        logger.info(f"Starting enhanced synthetic data generation for dataset: {dataset_id}")
 
-        # Verify dataset exists
         if dataset_id not in datasets_db:
-            logger.error(f"Dataset {dataset_id} not found in background task")
+            logger.error(f"Dataset {dataset_id} not found")
             return
 
         dataset = datasets_db[dataset_id]
         datasets_db[dataset_id]["status"] = "processing"
-        logger.info(f"Dataset {dataset_id} status set to processing")
 
-        # Load original data
-        original_df = pd.read_csv(dataset["file_path"])
-        logger.info(f"Loaded original data: {len(original_df)} rows, {len(original_df.columns)} columns")
+        enhanced_generator = EnhancedSyntheticDataGenerator()
 
-        # Step 1: Apply privacy masking
-        logger.info("Step 1: Applying privacy masks...")
-        await asyncio.sleep(1)  # Simulate processing time
+        with open(dataset["file_path"], "rb") as f:
+            file_data = f.read()
 
-        privacy_masker = PrivacyMasker()
-        masked_df = privacy_masker.apply_privacy_masks(original_df, privacy_config)
-        logger.info("Privacy masking completed")
+        filename = dataset["filename"]
 
-        # Step 2: Generate synthetic data
-        logger.info("Step 2: Generating synthetic data...")
-        await asyncio.sleep(2)
+        result = enhanced_generator.process_upload(file_data, filename, privacy_config)
 
-        synthetic_generator = SyntheticDataGenerator(method="statistical")
-        target_rows = num_rows if num_rows else len(original_df)
-        synthetic_df = synthetic_generator.generate_synthetic_data(masked_df, target_rows)
-        logger.info(f"Synthetic data generated: {len(synthetic_df)} rows")
+        synthetic_paths = {}
+        for table_name, synthetic_df in result['tables'].items():
+            synthetic_path = f"synthetic/{dataset_id}_{table_name}_synthetic.csv"
+            synthetic_df.to_csv(synthetic_path, index=False)
+            synthetic_paths[table_name] = synthetic_path
 
-        # Step 3: Quality validation
-        logger.info("Step 3: Validating quality...")
-        await asyncio.sleep(1)
-
-        quality_validator = QualityValidator()
-        quality_metrics = quality_validator.compare_distributions(original_df, synthetic_df)
-        logger.info("Quality validation completed")
-
-        # Step 4: Save synthetic data
-        logger.info("Step 4: Saving synthetic data...")
-        synthetic_path = f"synthetic/{dataset_id}_synthetic.csv"
-        synthetic_df.to_csv(synthetic_path, index=False)
-        logger.info(f"Synthetic data saved to: {synthetic_path}")
-
-        # Update dataset with completion
         datasets_db[dataset_id].update({
             "status": "completed",
-            "synthetic_path": synthetic_path,
-            "quality_metrics": quality_metrics,
-            "privacy_config": privacy_config.dict()
+            "synthetic_path": list(synthetic_paths.values())[0] if len(synthetic_paths) == 1 else None,
+            "synthetic_paths": synthetic_paths,
+            "quality_metrics": result['quality_metrics'],
+            "privacy_config": privacy_config.dict(),
+            "table_count": result['table_count'],
+            "relationships": result['relationships'],
+            "relationship_summary": result['relationship_summary']
         })
 
         logger.info(f"Dataset {dataset_id} generation completed successfully")
 
     except Exception as e:
-        logger.error(f"Error in background generation for dataset {dataset_id}: {e}")
-        logger.error(traceback.format_exc())
-
+        logger.error(f"Error in enhanced generation: {e}")
         if dataset_id in datasets_db:
             datasets_db[dataset_id]["status"] = "failed"
             datasets_db[dataset_id]["error_message"] = str(e)
@@ -254,9 +229,9 @@ async def generate_synthetic_data(
         background_tasks: BackgroundTasks,
         request: Request
 ):
-    """Generate synthetic data endpoint with proper request handling"""
+    """Generate synthetic data - now supports multi-table"""
     try:
-        logger.info(f"Generate synthetic data requested for dataset: {dataset_id}")
+        logger.info(f"Generate synthetic requested for: {dataset_id}")
 
         if dataset_id not in datasets_db:
             raise HTTPException(status_code=404, detail="Dataset not found")
@@ -264,50 +239,38 @@ async def generate_synthetic_data(
         dataset = datasets_db[dataset_id]
 
         if dataset["status"] == "processing":
-            raise HTTPException(status_code=400, detail="Dataset is already being processed")
+            raise HTTPException(status_code=400, detail="Already processing")
 
-        # Parse request body
         try:
             body = await request.json()
-            logger.info(f"Request body: {body}")
-
-            # Extract privacy config and num_rows
             privacy_config_data = body.get("privacy_config", {})
             num_rows = body.get("num_rows")
-
-            # Create PrivacyConfig object
             privacy_config = PrivacyConfig(**privacy_config_data)
-
         except Exception as e:
-            logger.error(f"Error parsing request body: {e}")
-            # Use default config if parsing fails
+            logger.error(f"Error parsing request: {e}")
             privacy_config = PrivacyConfig()
             num_rows = None
 
-        logger.info(f"Using privacy config: {privacy_config.dict()}")
-        logger.info(f"Target rows: {num_rows}")
-
-        # Start background task
         background_tasks.add_task(
-            generate_synthetic_data_background,
+            generate_synthetic_data_background_enhanced,
             dataset_id,
             privacy_config,
             num_rows
         )
 
-        logger.info(f"Background task started for dataset: {dataset_id}")
+        logger.info(f"Background task started for: {dataset_id}")
         return {"message": "Synthetic data generation started", "dataset_id": dataset_id}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error starting generation: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start: {str(e)}")
 
-@app.get("/api/datasets/{dataset_id}/download")
-async def download_synthetic_data(dataset_id: str):
-    logger.info(f"Download requested for dataset: {dataset_id}")
+@app.get("/api/datasets/{dataset_id}/download-zip")
+async def download_synthetic_data_zip(dataset_id: str):
+    """Download all synthetic tables as ZIP"""
+    logger.info(f"ZIP download requested for: {dataset_id}")
 
     if dataset_id not in datasets_db:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -315,16 +278,55 @@ async def download_synthetic_data(dataset_id: str):
     dataset = datasets_db[dataset_id]
 
     if dataset["status"] != "completed":
-        raise HTTPException(status_code=400, detail=f"Synthetic data not ready. Status: {dataset['status']}")
+        raise HTTPException(status_code=400, detail=f"Data not ready. Status: {dataset['status']}")
 
-    if "synthetic_path" not in dataset or not os.path.exists(dataset["synthetic_path"]):
-        raise HTTPException(status_code=404, detail="Synthetic data file not found")
+    zip_buffer = io.BytesIO()
 
-    return FileResponse(
-        dataset["synthetic_path"],
-        filename=f"{dataset['filename']}_synthetic.csv",
-        media_type="text/csv"
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        if "synthetic_path" in dataset and dataset["synthetic_path"]:
+            if os.path.exists(dataset["synthetic_path"]):
+                zip_file.write(dataset["synthetic_path"], f"{dataset['filename']}_synthetic.csv")
+
+        if "synthetic_paths" in dataset:
+            for table_name, path in dataset["synthetic_paths"].items():
+                if os.path.exists(path):
+                    zip_file.write(path, f"{table_name}_synthetic.csv")
+
+        if "relationship_summary" in dataset and dataset["relationship_summary"]["total_relationships"] > 0:
+            relationship_json = json.dumps(dataset["relationship_summary"], indent=2)
+            zip_file.writestr("relationship_summary.json", relationship_json)
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        io.BytesIO(zip_buffer.read()),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={dataset['filename']}_synthetic.zip"}
     )
+
+
+@app.get("/api/datasets/{dataset_id}/relationships")
+async def get_dataset_relationships(dataset_id: str):
+    """Get relationship information"""
+    logger.info(f"Relationships requested for: {dataset_id}")
+
+    if dataset_id not in datasets_db:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset = datasets_db[dataset_id]
+
+    return {
+        "dataset_id": dataset_id,
+        "table_count": dataset.get("table_count", 1),
+        "relationships": dataset.get("relationships", {}),
+        "relationship_summary": dataset.get("relationship_summary", {
+            "total_relationships": 0,
+            "tables_with_primary_keys": 0,
+            "tables_with_foreign_keys": 0,
+            "generation_order": [Path(dataset["filename"]).stem],
+            "relationship_details": []
+        })
+    }
 
 @app.get("/api/datasets/{dataset_id}/preview")
 async def preview_data(dataset_id: str, synthetic: bool = False):

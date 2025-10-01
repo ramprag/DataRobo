@@ -1,3 +1,6 @@
+// frontend/src/App.js
+// Update your existing App.js with these changes
+
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
@@ -10,18 +13,19 @@ import GenerationProgress from './components/GenerationProgress';
 import QualityReport from './components/QualityReport';
 import DebugPanel from './components/DebugPanel';
 import DataPreview from './components/DataPreview';
+import RelationshipViewer from './components/RelationshipViewer'; // NEW IMPORT
+
 // API Configuration
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // Increased timeout for file uploads
+  timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
   }
 });
 
-// Add response interceptor for better error handling
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -33,17 +37,15 @@ api.interceptors.response.use(
 function App() {
   const [datasets, setDatasets] = useState([]);
   const [selectedDataset, setSelectedDataset] = useState(null);
-  const [currentStep, setCurrentStep] = useState('upload'); // upload, configure, generate, review
+  const [currentStep, setCurrentStep] = useState('upload');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [pollIntervalRef, setPollIntervalRef] = useState(null);
 
-  // Fetch datasets on component mount
   useEffect(() => {
     fetchDatasets();
 
-    // Cleanup polling on unmount
     return () => {
       if (pollIntervalRef) {
         clearInterval(pollIntervalRef);
@@ -51,7 +53,6 @@ function App() {
     };
   }, []);
 
-  // Cleanup polling when dataset changes
   useEffect(() => {
     return () => {
       if (pollIntervalRef) {
@@ -87,14 +88,20 @@ function App() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 120000, // 2 minutes for file upload
+        timeout: 120000,
       });
 
       const newDataset = response.data;
       setDatasets(prev => [newDataset, ...prev]);
       setSelectedDataset(newDataset);
       setCurrentStep('configure');
-      setSuccess('Dataset uploaded successfully!');
+
+      // Different success message for ZIP files
+      const isZip = file.name.toLowerCase().endsWith('.zip');
+      setSuccess(isZip ?
+        `Multi-table dataset uploaded! ${newDataset.table_count} tables detected.` :
+        'Dataset uploaded successfully!'
+      );
 
     } catch (err) {
       console.error('Upload failed:', err);
@@ -114,14 +121,12 @@ function App() {
       setError(null);
       setSuccess(null);
 
-      // Clear any existing polling
       if (pollIntervalRef) {
         console.log('Clearing existing polling interval');
         clearInterval(pollIntervalRef);
         setPollIntervalRef(null);
       }
 
-      // Fetch latest dataset status
       console.log('Fetching latest dataset status...');
       const response = await api.get(`/api/datasets/${dataset.id}`);
       const updatedDataset = response.data;
@@ -129,7 +134,6 @@ function App() {
       console.log('Latest dataset status:', updatedDataset.status);
       setSelectedDataset(updatedDataset);
 
-      // Set appropriate step based on status
       switch (updatedDataset.status) {
         case 'uploaded':
           console.log('Dataset is uploaded, going to configure step');
@@ -139,8 +143,7 @@ function App() {
         case 'processing':
           console.log('Dataset is processing, going to generate step and starting polling');
           setCurrentStep('generate');
-          setLoading(true); // Set loading state for processing
-          // Start polling for this dataset
+          setLoading(true);
           pollGenerationStatus(updatedDataset.id);
           break;
 
@@ -166,7 +169,7 @@ function App() {
     } catch (err) {
       console.error('Failed to select dataset:', err);
       setError('Failed to load dataset details: ' + (err.response?.data?.detail || err.message));
-      setSelectedDataset(dataset); // Set it anyway to allow retry
+      setSelectedDataset(dataset);
       setCurrentStep('configure');
       setLoading(false);
     }
@@ -193,14 +196,12 @@ function App() {
 
       console.log('Generation request successful:', response.data);
 
-      // Update dataset status immediately
       setSelectedDataset(prev => ({
         ...prev,
         status: 'processing',
         privacy_config: privacyConfig
       }));
 
-      // Start polling for progress
       pollGenerationStatus(selectedDataset.id);
 
     } catch (err) {
@@ -217,13 +218,12 @@ function App() {
   };
 
   const pollGenerationStatus = (datasetId) => {
-    // Clear any existing polling
     if (pollIntervalRef) {
       clearInterval(pollIntervalRef);
     }
 
     let pollCount = 0;
-    const maxPolls = 150; // 5 minutes at 2-second intervals
+    const maxPolls = 150;
 
     const intervalId = setInterval(async () => {
       pollCount++;
@@ -244,7 +244,6 @@ function App() {
 
         setSelectedDataset(updatedDataset);
 
-        // Update dataset in list
         setDatasets(prev =>
           prev.map(d => d.id === updatedDataset.id ? updatedDataset : d)
         );
@@ -265,14 +264,14 @@ function App() {
 
       } catch (err) {
         console.error('Error polling status:', err);
-        if (pollCount > 3) { // Only show error after a few failed attempts
+        if (pollCount > 3) {
           clearInterval(intervalId);
           setPollIntervalRef(null);
           setError('Error checking generation status: ' + (err.response?.data?.detail || err.message));
           setLoading(false);
         }
       }
-    }, 2000); // Poll every 2 seconds
+    }, 2000);
 
     setPollIntervalRef(intervalId);
   };
@@ -285,10 +284,9 @@ function App() {
 
       const response = await api.get(`/api/datasets/${selectedDataset.id}/download`, {
         responseType: 'blob',
-        timeout: 60000, // 1 minute timeout for download
+        timeout: 60000,
       });
 
-      // Create download link
       const blob = new Blob([response.data], { type: 'text/csv' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -307,6 +305,36 @@ function App() {
     }
   };
 
+  // NEW FUNCTION: Download multi-table datasets as ZIP
+  const handleDownloadMultiTable = async () => {
+    if (!selectedDataset) return;
+
+    try {
+      setError(null);
+
+      const response = await api.get(`/api/datasets/${selectedDataset.id}/download-zip`, {
+        responseType: 'blob',
+        timeout: 60000,
+      });
+
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${selectedDataset.filename.replace(/\.[^/.]+$/, '')}_synthetic.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setSuccess('Multi-table synthetic data downloaded successfully!');
+
+    } catch (err) {
+      console.error('Multi-table download failed:', err);
+      setError('Download failed: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
   const handleDeleteDataset = async (datasetId) => {
     if (!window.confirm('Are you sure you want to delete this dataset?')) return;
 
@@ -317,7 +345,6 @@ function App() {
       if (selectedDataset?.id === datasetId) {
         setSelectedDataset(null);
         setCurrentStep('upload');
-        // Clear polling if active
         if (pollIntervalRef) {
           clearInterval(pollIntervalRef);
           setPollIntervalRef(null);
@@ -349,7 +376,6 @@ function App() {
       <main className="app-main">
         <div className="container">
 
-          {/* Status Messages */}
           {error && (
             <div className="alert alert-error">
               <span>{error}</span>
@@ -364,7 +390,6 @@ function App() {
             </div>
           )}
 
-          {/* Progress Indicator */}
           <div className="progress-steps">
             <div className={`step ${currentStep === 'upload' ? 'active' : currentStep !== 'upload' ? 'completed' : ''}`}>
               <span className="step-number">1</span>
@@ -385,7 +410,6 @@ function App() {
           </div>
 
           <div className="app-content">
-            {/* Sidebar - Dataset List */}
             <aside className="sidebar">
               <DatasetList
                 datasets={datasets}
@@ -396,13 +420,12 @@ function App() {
               />
             </aside>
 
-            {/* Main Content */}
             <div className="main-content">
 
               {currentStep === 'upload' && (
                 <div className="step-content">
                   <h2>Upload Your Dataset</h2>
-                  <p>Upload a CSV file to generate privacy-safe synthetic data</p>
+                  <p>Upload a CSV file or ZIP archive of multiple tables</p>
                   <FileUpload
                     onFileUpload={handleFileUpload}
                     loading={loading}
@@ -415,24 +438,24 @@ function App() {
                   <h2>Configure Privacy Settings</h2>
                   <p>Choose what data to mask and how to anonymize it</p>
 
-                  {/* Dataset Info */}
                   <div className="dataset-info">
                     <h3>Dataset: {selectedDataset.filename}</h3>
                     <div className="dataset-stats">
-                      <span>📊 {selectedDataset.row_count?.toLocaleString() || 'Unknown'} rows</span>
-                      <span>📋 {selectedDataset.column_count || 'Unknown'} columns</span>
+                      {selectedDataset.table_count > 1 && (
+                        <span>📦 {selectedDataset.table_count} tables</span>
+                      )}
+                      <span>📊 {selectedDataset.row_count?.toLocaleString() || 'Unknown'} total rows</span>
+                      <span>📋 {selectedDataset.column_count || 'Unknown'} total columns</span>
                       <span>💾 {selectedDataset.file_size ? (selectedDataset.file_size / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown size'}</span>
                     </div>
                   </div>
 
-                  {/* Data Preview */}
                   <DataPreview
                     datasetId={selectedDataset.id}
                     title="Original Data Preview"
                     synthetic={false}
                   />
 
-                  {/* Privacy Configuration */}
                   <PrivacyConfig
                     dataset={selectedDataset}
                     onSubmit={handlePrivacyConfig}
@@ -458,14 +481,25 @@ function App() {
                   <h2>Review Synthetic Data</h2>
                   <p>Review the quality and download your synthetic dataset</p>
 
-                  {/* Action Buttons */}
+                  {/* Enhanced Action Buttons for Multi-Table Support */}
                   <div className="action-buttons">
-                    <button
-                      className="btn btn-primary btn-large"
-                      onClick={handleDownload}
-                    >
-                      📥 Download Synthetic Data
-                    </button>
+                    {selectedDataset.table_count > 1 ? (
+                      <button
+                        className="btn btn-primary btn-large"
+                        onClick={handleDownloadMultiTable}
+                        style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}
+                      >
+                        📦 Download All Tables (ZIP)
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary btn-large"
+                        onClick={handleDownload}
+                      >
+                        📥 Download Synthetic Data
+                      </button>
+                    )}
+
                     <button
                       className="btn btn-secondary"
                       onClick={() => setCurrentStep('configure')}
@@ -474,7 +508,17 @@ function App() {
                     </button>
                   </div>
 
-                  {/* Data Previews */}
+                  {/* Relationship Viewer for Multi-Table Datasets */}
+                  {selectedDataset.table_count > 1 && (
+                    <RelationshipViewer
+                      datasetId={selectedDataset.id}
+                      relationshipData={{
+                        table_count: selectedDataset.table_count,
+                        relationship_summary: selectedDataset.relationship_summary
+                      }}
+                    />
+                  )}
+
                   <div className="preview-grid">
                     <DataPreview
                       datasetId={selectedDataset.id}
@@ -488,7 +532,6 @@ function App() {
                     />
                   </div>
 
-                  {/* Quality Report */}
                   {selectedDataset.quality_metrics && (
                     <QualityReport
                       dataset={selectedDataset}
@@ -510,7 +553,6 @@ function App() {
         </div>
       </footer>
 
-      {/* Debug Panel - only shows in development */}
       <DebugPanel
         selectedDataset={selectedDataset}
         currentStep={currentStep}
