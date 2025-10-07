@@ -30,6 +30,7 @@ class TableRelationshipDetector:
         """Analyze multiple tables to detect relationships"""
         logger.info(f"Analyzing {len(tables)} tables for relationships")
 
+        # Store schemas
         for table_name, df in tables.items():
             self.table_schemas[table_name] = {
                 'columns': list(df.columns),
@@ -38,11 +39,19 @@ class TableRelationshipDetector:
                 'null_counts': df.isnull().sum().to_dict()
             }
 
+        # Detect primary keys
         for table_name, df in tables.items():
             self.primary_keys[table_name] = self._detect_primary_key(df, table_name)
 
+        # Detect foreign keys with improved logic
         self._detect_foreign_keys(tables)
+
+        # Get generation order
         dependency_order = self._get_generation_order()
+
+        logger.info(f"Detected {len(self.relationships)} relationships")
+        logger.info(f"Primary keys: {self.primary_keys}")
+        logger.info(f"Foreign keys: {self.foreign_keys}")
 
         return {
             'relationships': self.relationships,
@@ -53,108 +62,142 @@ class TableRelationshipDetector:
         }
 
     def _detect_primary_key(self, df: pd.DataFrame, table_name: str) -> Optional[str]:
-        """Detect primary key column with a more robust scoring model."""
+        """Detect primary key column with improved logic"""
         candidates = []
-        
-        if len(df) == 0:
-            logger.warning(f"Table '{table_name}' is empty, skipping PK detection.")
-            return None
 
         for col in df.columns:
-            uniqueness_ratio = df[col].nunique() / len(df) if len(df) > 0 else 0
-            null_ratio = df[col].isnull().sum() / len(df) if len(df) > 0 else 1
+            col_data = df[col].dropna()
 
-            score = 0.0
-            score += uniqueness_ratio * 10
-            score -= null_ratio * 20
+            # Skip if too many nulls
+            if len(col_data) < len(df) * 0.95:
+                continue
 
-            col_lower = col.lower()
-            if 'id' in col_lower or 'key' in col_lower or 'code' in col_lower:
-                score += 5.0
-                if col_lower == 'id' or col_lower.endswith('_id'):
+            # Check uniqueness
+            if col_data.nunique() == len(col_data):
+                score = 0.0
+                col_lower = col.lower()
+
+                # Scoring based on column name patterns
+                if col_lower == 'id':
+                    score += 10.0
+                elif col_lower.endswith('_id') or col_lower.endswith('id'):
+                    score += 8.0
+                elif 'key' in col_lower:
                     score += 5.0
+                elif col_lower.startswith('id_'):
+                    score += 6.0
 
-            if pd.api.types.is_integer_dtype(df[col]):
-                score += 3.0
-            
-            if uniqueness_ratio == 1.0 and null_ratio == 0.0:
-                score += 15.0
-            
-            if score > 0 and uniqueness_ratio > 0.5:
-                 candidates.append({'column': col, 'score': score})
+                # Prefer integer types
+                if pd.api.types.is_integer_dtype(df[col]):
+                    score += 3.0
+
+                # Prefer sequential or ordered data
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    try:
+                        values = sorted(col_data.values)
+                        if values == list(range(min(values), max(values) + 1)):
+                            score += 5.0  # Sequential integers
+                    except:
+                        pass
+
+                candidates.append({'column': col, 'score': score})
 
         if candidates:
             candidates.sort(key=lambda x: x['score'], reverse=True)
             pk = candidates[0]['column']
-            logger.info(f"Detected primary key '{pk}' for table '{table_name}' (Score: {candidates[0]['score']:.2f})")
+            logger.info(f"✓ Detected primary key '{pk}' for table '{table_name}' (score: {candidates[0]['score']})")
             return pk
-        
-        logger.warning(f"No suitable primary key found for table '{table_name}'.")
+
+        logger.warning(f"✗ No primary key detected for table '{table_name}'")
         return None
 
     def _detect_foreign_keys(self, tables: Dict[str, pd.DataFrame]):
-        """Detect foreign key relationships between tables"""
+        """Detect foreign key relationships with improved matching"""
         table_names = list(tables.keys())
 
-        for i, parent_table in enumerate(table_names):
-            for j, child_table in enumerate(table_names):
-                if i != j:
-                    self._find_fk_relationship(
-                        parent_table, tables[parent_table],
-                        child_table, tables[child_table]
-                    )
+        for parent_table in table_names:
+            parent_pk = self.primary_keys.get(parent_table)
+            if not parent_pk:
+                continue
 
-    def _find_fk_relationship(self, parent_name: str, parent_df: pd.DataFrame,
-                             child_name: str, child_df: pd.DataFrame):
-        """Find foreign key relationship with robust type casting."""
-        parent_pk = self.primary_keys.get(parent_name)
-        if not parent_pk:
-            return
+            parent_df = tables[parent_table]
+            parent_values = set(parent_df[parent_pk].dropna().values)
 
-        parent_pk_lower = parent_pk.lower()
-        parent_name_lower = parent_name.lower()
-        singular_parent_name = parent_name_lower.rstrip('s') if parent_name_lower.endswith('s') else parent_name_lower
+            if len(parent_values) == 0:
+                continue
 
-        for col in child_df.columns:
-            col_lower = col.lower()
-            is_potential_fk = False
-
-            if col_lower == parent_pk_lower:
-                is_potential_fk = True
-            elif parent_pk_lower == 'id' and col_lower == f"{singular_parent_name}_id":
-                is_potential_fk = True
-            elif parent_pk_lower == 'id' and col_lower == f"{parent_name_lower}_id":
-                is_potential_fk = True
-            elif col_lower == f"{singular_parent_name}{parent_pk_lower}" or \
-                 col_lower == f"{singular_parent_name}_{parent_pk_lower}":
-                is_potential_fk = True
-
-            if is_potential_fk:
-                parent_series = parent_df[parent_pk].dropna()
-                child_series = child_df[col].dropna()
-
-                if parent_series.empty or child_series.empty:
+            for child_table in table_names:
+                if parent_table == child_table:
                     continue
 
-                parent_numeric = pd.to_numeric(parent_series, errors='coerce')
-                child_numeric = pd.to_numeric(child_series, errors='coerce')
+                child_df = tables[child_table]
 
-                is_parent_numeric = parent_numeric.notna().sum() / len(parent_series) > 0.9 if not parent_series.empty else False
-                is_child_numeric = child_numeric.notna().sum() / len(child_series) > 0.9 if not child_series.empty else False
+                # Look for FK candidates
+                for col in child_df.columns:
+                    if self._is_foreign_key_candidate(
+                        parent_table, parent_pk, parent_values,
+                        child_table, col, child_df
+                    ):
+                        child_values = set(child_df[col].dropna().values)
+                        overlap = len(child_values.intersection(parent_values))
 
-                if is_parent_numeric and is_child_numeric:
-                    parent_values = set(parent_numeric.dropna())
-                    child_values = set(child_numeric.dropna())
-                else:
-                    parent_values = set(parent_series.astype(str))
-                    child_values = set(child_series.astype(str))
+                        if len(child_values) > 0:
+                            confidence = overlap / len(child_values)
 
-                if len(child_values) > 0:
-                    overlap = len(child_values.intersection(parent_values))
-                    confidence = overlap / len(child_values)
+                            # Lower threshold for better detection
+                            if confidence >= 0.7:  # Changed from 0.8
+                                self._add_relationship(
+                                    parent_table, parent_pk,
+                                    child_table, col, confidence
+                                )
 
-                    if confidence > 0.8:
-                        self._add_relationship(parent_name, parent_pk, child_name, col, confidence)
+    def _is_foreign_key_candidate(self, parent_table: str, parent_pk: str,
+                                  parent_values: set, child_table: str,
+                                  child_col: str, child_df: pd.DataFrame) -> bool:
+        """Check if a column is a foreign key candidate"""
+
+        # Don't check the same column name in the same logical table
+        if child_col == parent_pk and parent_table == child_table:
+            return False
+
+        col_lower = child_col.lower()
+        parent_lower = parent_table.lower()
+        pk_lower = parent_pk.lower()
+
+        # Name-based matching patterns
+        name_matches = [
+            col_lower == pk_lower,  # Exact match
+            col_lower == f"{parent_lower}_{pk_lower}",  # table_id pattern
+            col_lower == f"{parent_lower}{pk_lower}",  # tableid pattern
+            col_lower.endswith(f"_{pk_lower}"),  # *_id pattern
+            col_lower.startswith(f"{parent_lower}_"),  # table_* pattern
+            parent_lower in col_lower and 'id' in col_lower,  # Contains table and id
+        ]
+
+        if not any(name_matches):
+            return False
+
+        # Data type compatibility
+        parent_dtype = str(type(list(parent_values)[0]).__name__) if parent_values else None
+        child_dtype = str(child_df[child_col].dtype)
+
+        # Check type compatibility
+        if not self._are_types_compatible(parent_dtype, child_dtype):
+            return False
+
+        return True
+
+    def _are_types_compatible(self, type1: str, type2: str) -> bool:
+        """Check if two data types are compatible for FK relationship"""
+        numeric_types = ['int', 'int32', 'int64', 'float', 'float32', 'float64']
+        string_types = ['object', 'str', 'string']
+
+        if any(t in type1.lower() for t in numeric_types):
+            return any(t in type2.lower() for t in numeric_types)
+        elif any(t in type1.lower() for t in string_types):
+            return any(t in type2.lower() for t in string_types)
+
+        return True  # Default to compatible
 
     def _add_relationship(self, parent_table: str, parent_col: str,
                          child_table: str, child_col: str, confidence: float):
@@ -180,30 +223,36 @@ class TableRelationshipDetector:
             'confidence': confidence
         })
 
-        logger.info(f"Detected FK: {rel_key} (confidence: {confidence:.2f})")
+        logger.info(f"✓ Detected FK: {rel_key} (confidence: {confidence:.2%})")
 
     def _get_generation_order(self) -> List[str]:
         """Get topological order for table generation"""
+        all_tables = set(self.table_schemas.keys())
         visited = set()
         order = []
 
-        graph = {table: [] for table in self.table_schemas.keys()}
+        # Build dependency graph
+        graph = {table: [] for table in all_tables}
         for rel in self.relationships.values():
             if rel['type'] == 'foreign_key':
-                graph[rel['parent_table']].append(rel['child_table'])
+                # Child depends on parent
+                graph[rel['child_table']].append(rel['parent_table'])
 
         def visit(node):
             if node in visited:
                 return
             visited.add(node)
-            for child in graph.get(node, []):
-                if child not in visited:
-                    visit(child)
-            order.insert(0, node)
+            for parent in graph.get(node, []):
+                if parent not in visited:
+                    visit(parent)
+            order.append(node)
 
-        for node in graph.keys():
-            visit(node)
+        # Visit all nodes
+        for node in all_tables:
+            if node not in visited:
+                visit(node)
 
+        logger.info(f"Generation order: {order}")
         return order
 
 
@@ -216,8 +265,9 @@ class SyntheticKeyManager:
     def create_mapping(self, table_name: str, original_values: pd.Series) -> Dict:
         """Create mapping from original to synthetic keys"""
         mapping = {}
+        unique_values = original_values.dropna().unique()
 
-        for i, original_key in enumerate(original_values.unique()):
+        for i, original_key in enumerate(unique_values):
             synthetic_key = self._generate_synthetic_key(table_name, original_key, i)
             mapping[original_key] = synthetic_key
 
@@ -228,6 +278,7 @@ class SyntheticKeyManager:
             'created_at': datetime.now()
         }
 
+        logger.info(f"Created key mapping for {table_name}: {len(mapping)} unique values")
         return {'mapping_id': mapping_id, 'mapping': mapping}
 
     def _generate_synthetic_key(self, table_name: str, original_key: Any, index: int) -> Any:
@@ -252,7 +303,7 @@ class SyntheticKeyManager:
 
 
 class EnhancedSyntheticDataGenerator:
-    """Multi-table synthetic data generator with GAN support and relationship preservation"""
+    """Multi-table synthetic data generator with relationship preservation"""
 
     def __init__(self):
         self.single_table_generator = SyntheticDataGenerator()
@@ -261,34 +312,19 @@ class EnhancedSyntheticDataGenerator:
         self.relationship_detector = TableRelationshipDetector()
         self.key_manager = SyntheticKeyManager()
 
-    def process_upload(
-        self,
-        file_data: bytes,
-        filename: str,
-        privacy_config,
-        use_gan: bool = True,
-        gan_model: str = "ctgan"
-    ) -> Dict:
-        """
-        Process upload - handles both single and multiple tables with GAN support
-
-        Args:
-            file_data: Raw file bytes
-            filename: Original filename
-            privacy_config: Privacy configuration object
-            use_gan: Whether to use GAN for generation (default: True)
-            gan_model: Which GAN model to use - "ctgan" or "tvae" (default: "ctgan")
-        """
-        logger.info(f"Processing upload: {filename} (GAN: {use_gan}, Model: {gan_model})")
+    def process_upload(self, file_data: bytes, filename: str, privacy_config) -> Dict:
+        """Process upload - handles both single and multiple tables"""
+        logger.info(f"Processing upload: {filename}")
 
         tables = self._extract_tables(file_data, filename)
+        logger.info(f"Extracted {len(tables)} table(s): {list(tables.keys())}")
 
         if len(tables) == 1:
             table_name = list(tables.keys())[0]
             df = list(tables.values())[0]
-            return self._process_single_table(df, table_name, privacy_config, use_gan, gan_model)
+            return self._process_single_table(df, table_name, privacy_config)
         else:
-            return self._process_multiple_tables(tables, privacy_config, use_gan, gan_model)
+            return self._process_multiple_tables(tables, privacy_config)
 
     def _extract_tables(self, file_data: bytes, filename: str) -> Dict[str, pd.DataFrame]:
         """Extract tables from uploaded file(s)"""
@@ -301,13 +337,13 @@ class EnhancedSyntheticDataGenerator:
                         with zip_file.open(file_info) as f:
                             table_name = Path(file_info.filename).stem
                             tables[table_name] = self._read_table_file(f.read(), file_info.filename)
+                            logger.info(f"Extracted table '{table_name}' with {len(tables[table_name])} rows")
         elif filename.lower().endswith(('.csv', '.xlsx', '.xls')):
             table_name = Path(filename).stem
             tables[table_name] = self._read_table_file(file_data, filename)
         else:
             raise ValueError(f"Unsupported file type: {filename}")
 
-        logger.info(f"Extracted {len(tables)} tables")
         return tables
 
     def _read_table_file(self, file_data: bytes, filename: str) -> pd.DataFrame:
@@ -319,43 +355,12 @@ class EnhancedSyntheticDataGenerator:
         else:
             raise ValueError(f"Unsupported file type: {filename}")
 
-    def _process_single_table(
-        self,
-        df: pd.DataFrame,
-        filename: str,
-        privacy_config,
-        use_gan: bool = True,
-        gan_model: str = "ctgan"
-    ) -> Dict:
-        """Process single table using GAN or statistical method"""
+    def _process_single_table(self, df: pd.DataFrame, filename: str, privacy_config) -> Dict:
+        """Process single table using existing logic"""
         logger.info(f"Processing single table: {filename}")
 
-        # Apply privacy masking
         masked_df = self.privacy_masker.apply_privacy_masks(df, privacy_config)
-
-        # Generate synthetic data with GAN support
-        generation_method = "unknown"
-        try:
-            if use_gan and self.single_table_generator.gan_available:
-                logger.info(f"🤖 Attempting {gan_model.upper()} generation for single table")
-                synthetic_df = self.single_table_generator.generate_synthetic_data(
-                    masked_df,
-                    use_gan=True
-                )
-                generation_method = gan_model
-                logger.info(f"✅ {gan_model.upper()} generation successful")
-            else:
-                logger.info("📊 Using statistical generation for single table")
-                synthetic_df = self.single_table_generator.generate_synthetic_data(
-                    masked_df,
-                    use_gan=False
-                )
-                generation_method = "statistical"
-        except Exception as e:
-            logger.warning(f"⚠️ GAN generation failed: {e}, falling back to statistical")
-            synthetic_df = self.single_table_generator._generate_statistical(masked_df, len(masked_df))
-            generation_method = "statistical_fallback"
-
+        synthetic_df = self.single_table_generator.generate_synthetic_data(masked_df)
         quality_metrics = self.quality_validator.compare_distributions(df, synthetic_df)
 
         return {
@@ -364,7 +369,6 @@ class EnhancedSyntheticDataGenerator:
             'tables': {Path(filename).stem: synthetic_df},
             'relationships': {},
             'quality_metrics': quality_metrics,
-            'generation_method': generation_method,
             'relationship_summary': {
                 'total_relationships': 0,
                 'tables_with_primary_keys': 0,
@@ -374,42 +378,41 @@ class EnhancedSyntheticDataGenerator:
             }
         }
 
-    def _process_multiple_tables(
-        self,
-        tables: Dict[str, pd.DataFrame],
-        privacy_config,
-        use_gan: bool = True,
-        gan_model: str = "ctgan"
-    ) -> Dict:
-        """Process multiple related tables with GAN support"""
-        logger.info(f"🔗 Starting multi-table processing ({len(tables)} tables)")
+    def _process_multiple_tables(self, tables: Dict[str, pd.DataFrame], privacy_config) -> Dict:
+        """Process multiple related tables"""
+        logger.info("=" * 80)
+        logger.info("Starting multi-table processing with relationship detection")
+        logger.info("=" * 80)
 
+        # Analyze relationships
         relationship_info = self.relationship_detector.analyze_tables(tables)
+
+        logger.info(f"\nRelationship Analysis Complete:")
+        logger.info(f"  - Tables: {len(tables)}")
+        logger.info(f"  - Relationships found: {len(relationship_info['relationships'])}")
+        logger.info(f"  - Primary keys: {relationship_info['primary_keys']}")
+        logger.info(f"  - Foreign keys: {relationship_info['foreign_keys']}")
 
         synthetic_tables = {}
         key_mappings = {}
-        generation_methods = {}
 
+        # Generate tables in dependency order
         for table_name in relationship_info['generation_order']:
-            logger.info(f"📊 Generating synthetic data for table: {table_name}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Generating synthetic data for: {table_name}")
+            logger.info(f"{'='*60}")
 
             original_df = tables[table_name]
             masked_df = self.privacy_masker.apply_privacy_masks(original_df, privacy_config)
 
-            synthetic_df, mapping_info, method_used = self._generate_table_with_relationships(
-                table_name,
-                masked_df,
-                relationship_info,
-                key_mappings,
-                use_gan,
-                gan_model
+            synthetic_df, mapping_info = self._generate_table_with_relationships(
+                table_name, masked_df, relationship_info, key_mappings
             )
 
             synthetic_tables[table_name] = synthetic_df
-            generation_methods[table_name] = method_used
-
             if mapping_info:
                 key_mappings.update(mapping_info)
+                logger.info(f"  ✓ Created {len(mapping_info)} key mapping(s)")
 
         # Calculate quality metrics
         original_dfs = list(tables.values())
@@ -419,12 +422,12 @@ class EnhancedSyntheticDataGenerator:
             original_dfs[0], synthetic_dfs[0]
         ) if len(original_dfs) > 0 else {'overall_quality_score': 50.0}
 
-        # Determine overall generation method
-        unique_methods = set(generation_methods.values())
-        if len(unique_methods) == 1:
-            overall_method = list(unique_methods)[0]
-        else:
-            overall_method = f"mixed ({', '.join(unique_methods)})"
+        summary = self._summarize_relationships(relationship_info)
+
+        logger.info("\n" + "="*80)
+        logger.info("Multi-table processing completed successfully")
+        logger.info(f"Summary: {summary['total_relationships']} relationships preserved")
+        logger.info("="*80 + "\n")
 
         return {
             'status': 'completed',
@@ -432,108 +435,65 @@ class EnhancedSyntheticDataGenerator:
             'tables': synthetic_tables,
             'relationships': relationship_info['relationships'],
             'quality_metrics': quality_metrics,
-            'generation_method': overall_method,
-            'generation_methods_by_table': generation_methods,
-            'relationship_summary': self._summarize_relationships(relationship_info)
+            'relationship_summary': summary
         }
 
-    def _generate_table_with_relationships(
-        self,
-        table_name: str,
-        df: pd.DataFrame,
-        relationship_info: Dict,
-        key_mappings: Dict,
-        use_gan: bool = True,
-        gan_model: str = "ctgan"
-    ) -> Tuple[pd.DataFrame, Dict, str]:
-        """
-        Generate synthetic table while preserving relationships
-
-        Returns:
-            Tuple of (synthetic_df, new_mappings, generation_method)
-        """
+    def _generate_table_with_relationships(self, table_name: str, df: pd.DataFrame,
+                                         relationship_info: Dict, key_mappings: Dict) -> Tuple[pd.DataFrame, Dict]:
+        """Generate synthetic table while preserving relationships"""
         synthetic_df = df.copy()
         new_mappings = {}
-        generation_method = "unknown"
-
-        # Identify columns that must be preserved (PKs and FKs)
-        pk_column = relationship_info['primary_keys'].get(table_name)
-        fks = relationship_info['foreign_keys'].get(table_name, [])
-
-        preserve_columns = []
-        if pk_column:
-            preserve_columns.append(pk_column)
-        preserve_columns.extend([fk['column'] for fk in fks])
 
         # Handle primary key
+        pk_column = relationship_info['primary_keys'].get(table_name)
         if pk_column and pk_column in df.columns:
+            logger.info(f"  - Processing PRIMARY KEY: {pk_column}")
             mapping_result = self.key_manager.create_mapping(table_name, df[pk_column])
             synthetic_df[pk_column] = self.key_manager.apply_mapping(
                 df[pk_column], mapping_result['mapping_id']
             )
             new_mappings[f"{table_name}_{pk_column}"] = mapping_result['mapping_id']
+            logger.info(f"    ✓ Transformed {len(df)} primary key values")
 
         # Handle foreign keys
+        fks = relationship_info['foreign_keys'].get(table_name, [])
         for fk in fks:
             fk_column = fk['column']
             parent_table = fk['references_table']
             parent_pk = fk['references_column']
+
+            logger.info(f"  - Processing FOREIGN KEY: {fk_column} -> {parent_table}.{parent_pk}")
 
             parent_mapping_key = f"{parent_table}_{parent_pk}"
             if parent_mapping_key in key_mappings:
                 synthetic_df[fk_column] = self.key_manager.apply_mapping(
                     df[fk_column], key_mappings[parent_mapping_key]
                 )
+                logger.info(f"    ✓ Applied mapping (confidence: {fk['confidence']:.2%})")
+            else:
+                logger.warning(f"    ✗ Parent mapping not found for {parent_mapping_key}")
 
-        # Generate synthetic data for non-relationship columns
-        columns_to_generate = [col for col in synthetic_df.columns if col not in preserve_columns]
+        # Generate other columns
+        preserve_columns = []
+        if pk_column:
+            preserve_columns.append(pk_column)
+        preserve_columns.extend([fk['column'] for fk in fks])
 
-        if len(columns_to_generate) > 0:
-            try:
-                if use_gan and self.single_table_generator.gan_available:
-                    logger.info(f"🤖 Using {gan_model.upper()} for table {table_name} (non-relationship columns)")
+        logger.info(f"  - Generating {len(df.columns) - len(preserve_columns)} non-key columns")
 
-                    # Generate only for non-preserved columns
-                    temp_df = synthetic_df[columns_to_generate].copy()
-                    generated_df = self.single_table_generator.generate_synthetic_data(
-                        temp_df,
-                        num_rows=len(synthetic_df),
-                        use_gan=True
+        for column in synthetic_df.columns:
+            if column not in preserve_columns:
+                if pd.api.types.is_numeric_dtype(synthetic_df[column]):
+                    synthetic_df[column] = self.single_table_generator._generate_numeric_column(
+                        synthetic_df[column], len(synthetic_df)
+                    )
+                else:
+                    synthetic_df[column] = self.single_table_generator._generate_categorical_column(
+                        synthetic_df[column], len(synthetic_df)
                     )
 
-                    # Replace only the generated columns
-                    for col in columns_to_generate:
-                        if col in generated_df.columns:
-                            synthetic_df[col] = generated_df[col]
-
-                    generation_method = gan_model
-                else:
-                    logger.info(f"📊 Using statistical method for table {table_name}")
-                    for column in columns_to_generate:
-                        if pd.api.types.is_numeric_dtype(synthetic_df[column]):
-                            synthetic_df[column] = self.single_table_generator._generate_numeric_column(
-                                synthetic_df[column], len(synthetic_df)
-                            )
-                        else:
-                            synthetic_df[column] = self.single_table_generator._generate_categorical_column(
-                                synthetic_df[column], len(synthetic_df)
-                            )
-                    generation_method = "statistical"
-
-            except Exception as e:
-                logger.warning(f"⚠️ Error in generation for {table_name}: {e}, using statistical fallback")
-                for column in columns_to_generate:
-                    if pd.api.types.is_numeric_dtype(synthetic_df[column]):
-                        synthetic_df[column] = self.single_table_generator._generate_numeric_column(
-                            synthetic_df[column], len(synthetic_df)
-                        )
-                    else:
-                        synthetic_df[column] = self.single_table_generator._generate_categorical_column(
-                            synthetic_df[column], len(synthetic_df)
-                        )
-                generation_method = "statistical_fallback"
-
-        return synthetic_df, new_mappings, generation_method
+        logger.info(f"  ✓ Table generation complete: {len(synthetic_df)} rows")
+        return synthetic_df, new_mappings
 
     def _summarize_relationships(self, relationship_info: Dict) -> Dict:
         """Create human-readable relationship summary"""
@@ -547,8 +507,12 @@ class EnhancedSyntheticDataGenerator:
 
         for rel_key, rel_info in relationship_info['relationships'].items():
             summary['relationship_details'].append({
-                'description': f"{rel_info['child_table']}.{rel_info['child_column']} references {rel_info['parent_table']}.{rel_info['parent_column']}",
-                'confidence': round(rel_info['confidence'], 2)
+                'description': f"{rel_info['child_table']}.{rel_info['child_column']} → {rel_info['parent_table']}.{rel_info['parent_column']}",
+                'confidence': round(rel_info['confidence'], 2),
+                'parent_table': rel_info['parent_table'],
+                'parent_column': rel_info['parent_column'],
+                'child_table': rel_info['child_table'],
+                'child_column': rel_info['child_column']
             })
 
         return summary
