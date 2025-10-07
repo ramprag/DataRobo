@@ -1,5 +1,7 @@
+// Updated frontend/src/components/PrivacyConfig.js with GAN support
 import React, { useState, useEffect } from 'react';
 import './PrivacyConfig.css';
+import GANConfig from './GANConfig';
 
 const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
   const [config, setConfig] = useState({
@@ -9,7 +11,9 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
     mask_addresses: true,
     mask_ssn: true,
     custom_fields: [],
-    anonymization_method: 'faker'
+    anonymization_method: 'faker',
+    use_gan: true,  // NEW: GAN enabled by default
+    gan_model: 'ctgan'  // NEW: Default to CTGAN
   });
   const [numRows, setNumRows] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -18,7 +22,6 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
   const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
-    // Load data preview to help user configure privacy settings
     if (dataset?.id) {
       fetchDataPreview();
     }
@@ -33,8 +36,6 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
       const apiUrl = process.env.REACT_APP_API_URL || '';
       const url = `${apiUrl}/api/datasets/${dataset.id}/preview`;
 
-      console.log('Fetching data preview for privacy config from:', url);
-
       const response = await fetch(url, {
         method: 'GET',
         headers: {
@@ -45,11 +46,7 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
 
       if (response.ok) {
         const preview = await response.json();
-        console.log('Privacy config preview data:', preview);
         setDataPreview(preview);
-      } else {
-        const errorText = await response.text();
-        console.error('Failed to fetch preview for privacy config:', response.status, errorText);
       }
     } catch (error) {
       console.error('Error fetching data preview for privacy config:', error);
@@ -62,6 +59,14 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
     setConfig(prev => ({
       ...prev,
       [field]: value
+    }));
+  };
+
+  const handleGANConfigChange = (ganConfig) => {
+    setConfig(prev => ({
+      ...prev,
+      use_gan: ganConfig.use_gan,
+      gan_model: ganConfig.gan_model
     }));
   };
 
@@ -85,7 +90,6 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
   const handleSubmit = (e) => {
     e.preventDefault();
 
-    // Validate configuration
     if (!dataset) {
       alert('No dataset selected');
       return;
@@ -93,13 +97,12 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
 
     const rows = numRows ? parseInt(numRows, 10) : null;
 
-    // Validate number of rows
     if (rows !== null && (isNaN(rows) || rows <= 0 || rows > 1000000)) {
       alert('Number of rows must be between 1 and 1,000,000');
       return;
     }
 
-    console.log('Submitting privacy config:', config, 'rows:', rows);
+    console.log('Submitting privacy config with GAN settings:', config, 'rows:', rows);
     onSubmit(config, rows);
   };
 
@@ -166,6 +169,12 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
         </div>
         <p>Configure which types of sensitive data to mask or anonymize</p>
       </div>
+
+      {/* NEW: GAN Configuration Section */}
+      <GANConfig
+        onConfigChange={handleGANConfigChange}
+        initialConfig={{ use_gan: config.use_gan, gan_model: config.gan_model }}
+      />
 
       {/* Basic Privacy Options */}
       <div className="config-section">
@@ -399,14 +408,22 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
           type="submit"
           className="btn btn-primary btn-large"
           disabled={loading || !dataset}
+          style={{
+            background: config.use_gan
+              ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+              : '#3b82f6'
+          }}
         >
           {loading ? (
             <>
               <span className="spinner"></span>
-              Generating...
+              {config.use_gan ? `Training ${config.gan_model.toUpperCase()}...` : 'Generating...'}
             </>
           ) : (
-            '🚀 Generate Synthetic Data'
+            <>
+              {config.use_gan ? '🤖' : '📊'} Generate Synthetic Data
+              {config.use_gan && ` with ${config.gan_model.toUpperCase()}`}
+            </>
           )}
         </button>
 
@@ -419,6 +436,11 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
           <p>
             🔒 Privacy level: <strong className={privacyLevel.color}>
               {privacyLevel.level}
+            </strong>
+          </p>
+          <p>
+            🤖 Method: <strong>
+              {config.use_gan ? `${config.gan_model.toUpperCase()} (Deep Learning)` : 'Statistical'}
             </strong>
           </p>
           {config.custom_fields.length > 0 && (
@@ -437,6 +459,9 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
           <li>Original data is automatically deleted after synthetic data generation</li>
           <li>Synthetic data maintains statistical properties while protecting individual privacy</li>
           <li>No personally identifiable information is retained</li>
+          {config.use_gan && (
+            <li>GAN models are trained on privacy-masked data only</li>
+          )}
         </ul>
       </div>
     </form>

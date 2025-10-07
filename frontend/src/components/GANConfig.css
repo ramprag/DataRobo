@@ -1,0 +1,262 @@
+/* frontend/src/components/GANConfig.css */
+
+.gan-config {
+  margin-bottom: 2rem;
+}
+
+.method-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.method-option {
+  display: flex;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  background: white;
+}
+
+.method-option:hover {
+  border-color: #d1d5db;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.method-option input[type="radio"] {
+  margin-top: 0.25rem;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.method-option input[type="radio"]:checked {
+  accent-color: #3b82f6;
+}
+
+.method-option:has(input:checked) {
+  border-color: #3b82f6;
+  background-color: #eff6ff;
+  box-shadow: 0 4px 6px rgba(59, 130, 246, 0.1);
+}
+
+.method-option:has(input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.option-content {
+  flex: 1;
+}
+
+.option-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.option-icon {
+  font-size: 1.5rem;
+}
+
+.option-header strong {
+  font-size: 1.125rem;
+  color: #1f2937;
+}
+
+.option-description {
+  color: #6b7280;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin-top: 0.5rem;
+}
+
+.badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.badge-success {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.badge-warning {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.badge-info {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.model-selection {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.model-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.model-radio:hover {
+  background-color: #f9fafb;
+}
+
+.model-radio input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.model-radio:has(input:checked) {
+  border-color: #3b82f6;
+  background-color: #eff6ff;
+}
+
+.model-radio span {
+  font-size: 0.875rem;
+  color: #374151;
+}
+
+.model-radio strong {
+  color: #1f2937;
+  margin-right: 0.5rem;
+}
+
+.info-box {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-top: 1rem;
+  border: 1px solid;
+}
+
+.info-box .info-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
+.info-box strong {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.info-box p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.info-box code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.875rem;
+}
+
+.info-success {
+  background-color: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.info-warning {
+  background-color: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+.comparison-table {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.comparison-table h5 {
+  margin-bottom: 1rem;
+  color: #374151;
+  font-size: 1rem;
+}
+
+.comparison-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.comparison-table th {
+  background-color: #f9fafb;
+  padding: 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.comparison-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #f3f4f6;
+  color: #1f2937;
+}
+
+.comparison-table tbody tr:hover {
+  background-color: #f9fafb;
+}
+
+.text-success {
+  color: #059669;
+}
+
+.text-warning {
+  color: #d97706;
+}
+
+.text-info {
+  color: #2563eb;
+}
+
+@media (max-width: 768px) {
+  .method-option {
+    padding: 1rem;
+  }
+
+  .option-header {
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
+
+  .comparison-table {
+    overflow-x: auto;
+  }
+
+  .comparison-table table {
+    min-width: 500px;
+  }
+}

@@ -1,5 +1,4 @@
-// frontend/src/App.js
-// Update your existing App.js with these changes
+// frontend/src/App.js - Fixed version with better error handling
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -13,14 +12,14 @@ import GenerationProgress from './components/GenerationProgress';
 import QualityReport from './components/QualityReport';
 import DebugPanel from './components/DebugPanel';
 import DataPreview from './components/DataPreview';
-import RelationshipViewer from './components/RelationshipViewer'; // NEW IMPORT
+import RelationshipViewer from './components/RelationshipViewer';
 
 // API Configuration
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000,
+  timeout: 120000, // Increased timeout for large files
   headers: {
     'Content-Type': 'application/json',
   }
@@ -81,6 +80,23 @@ function App() {
       setError(null);
       setSuccess(null);
 
+      // Validate file before upload
+      const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+      const allowedTypes = ['.csv', '.xlsx', '.xls', '.zip'];
+
+      if (!allowedTypes.includes(fileExtension)) {
+        throw new Error('Invalid file type. Please upload CSV, Excel, or ZIP files only.');
+      }
+
+      // Check file size (100MB for ZIP, 50MB for others)
+      const maxSize = fileExtension === '.zip' ? 100 * 1024 * 1024 : 50 * 1024 * 1024;
+      if (file.size > maxSize) {
+        const maxSizeLabel = fileExtension === '.zip' ? '100MB' : '50MB';
+        throw new Error(`File size exceeds maximum of ${maxSizeLabel}`);
+      }
+
+      console.log('Uploading file:', file.name, 'Size:', file.size, 'Type:', fileExtension);
+
       const formData = new FormData();
       formData.append('file', file);
 
@@ -88,28 +104,49 @@ function App() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 120000,
+        timeout: 180000, // 3 minutes for large files
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log('Upload progress:', percentCompleted + '%');
+        }
       });
 
       const newDataset = response.data;
+
+      // Validate response
+      if (!newDataset || !newDataset.id) {
+        throw new Error('Invalid response from server');
+      }
+
       setDatasets(prev => [newDataset, ...prev]);
       setSelectedDataset(newDataset);
       setCurrentStep('configure');
 
       // Different success message for ZIP files
-      const isZip = file.name.toLowerCase().endsWith('.zip');
-      setSuccess(isZip ?
-        `Multi-table dataset uploaded! ${newDataset.table_count} tables detected.` :
-        'Dataset uploaded successfully!'
-      );
+      const isZip = fileExtension === '.zip';
+      const successMsg = isZip
+        ? `✅ Multi-table dataset uploaded! ${newDataset.table_count || 0} tables detected.`
+        : '✅ Dataset uploaded successfully!';
+
+      setSuccess(successMsg);
+      console.log('Upload successful:', newDataset);
 
     } catch (err) {
       console.error('Upload failed:', err);
-      const errorMessage = err.response?.data?.detail ||
-                          err.response?.data?.message ||
-                          err.message ||
-                          'Unknown upload error';
-      setError('Upload failed: ' + errorMessage);
+
+      let errorMessage = 'Upload failed';
+
+      if (err.response?.data?.detail) {
+        errorMessage = err.response.data.detail;
+      } else if (err.message) {
+        errorMessage = err.message;
+      } else {
+        errorMessage = 'Unknown upload error occurred';
+      }
+
+      setError('❌ ' + errorMessage);
+      setCurrentStep('upload'); // Go back to upload step on error
+
     } finally {
       setLoading(false);
     }
@@ -151,14 +188,14 @@ function App() {
           console.log('Dataset is completed, going to review step');
           setCurrentStep('review');
           setLoading(false);
-          setSuccess('Synthetic data is ready for review!');
+          setSuccess('✅ Synthetic data is ready for review!');
           break;
 
         case 'failed':
           console.log('Dataset failed, going to configure step with error');
           setCurrentStep('configure');
           setLoading(false);
-          setError(`Previous generation failed: ${updatedDataset.error_message || 'Unknown error'}`);
+          setError(`❌ Previous generation failed: ${updatedDataset.error_message || 'Unknown error'}`);
           break;
 
         default:
@@ -210,7 +247,7 @@ function App() {
                           err.response?.data?.message ||
                           err.message ||
                           'Unknown generation error';
-      setError('Failed to start generation: ' + errorMessage);
+      setError('❌ Failed to start generation: ' + errorMessage);
       setCurrentStep('configure');
     } finally {
       setLoading(false);
@@ -231,7 +268,7 @@ function App() {
       if (pollCount > maxPolls) {
         clearInterval(intervalId);
         setPollIntervalRef(null);
-        setError('Generation is taking longer than expected. Please refresh and check status.');
+        setError('⚠️ Generation is taking longer than expected. Please refresh and check status.');
         setLoading(false);
         return;
       }
@@ -252,13 +289,13 @@ function App() {
           clearInterval(intervalId);
           setPollIntervalRef(null);
           setCurrentStep('review');
-          setSuccess('Synthetic data generated successfully!');
+          setSuccess('✅ Synthetic data generated successfully!');
           setLoading(false);
         } else if (updatedDataset.status === 'failed') {
           clearInterval(intervalId);
           setPollIntervalRef(null);
           setCurrentStep('configure');
-          setError(`Generation failed: ${updatedDataset.error_message || 'Unknown error occurred during generation'}`);
+          setError(`❌ Generation failed: ${updatedDataset.error_message || 'Unknown error occurred during generation'}`);
           setLoading(false);
         }
 
@@ -267,7 +304,7 @@ function App() {
         if (pollCount > 3) {
           clearInterval(intervalId);
           setPollIntervalRef(null);
-          setError('Error checking generation status: ' + (err.response?.data?.detail || err.message));
+          setError('❌ Error checking generation status: ' + (err.response?.data?.detail || err.message));
           setLoading(false);
         }
       }
@@ -297,15 +334,14 @@ function App() {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
 
-      setSuccess('Synthetic data downloaded successfully!');
+      setSuccess('✅ Synthetic data downloaded successfully!');
 
     } catch (err) {
       console.error('Download failed:', err);
-      setError('Download failed: ' + (err.response?.data?.detail || err.message));
+      setError('❌ Download failed: ' + (err.response?.data?.detail || err.message));
     }
   };
 
-  // NEW FUNCTION: Download multi-table datasets as ZIP
   const handleDownloadMultiTable = async () => {
     if (!selectedDataset) return;
 
@@ -327,11 +363,11 @@ function App() {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
 
-      setSuccess('Multi-table synthetic data downloaded successfully!');
+      setSuccess('✅ Multi-table synthetic data downloaded successfully!');
 
     } catch (err) {
       console.error('Multi-table download failed:', err);
-      setError('Download failed: ' + (err.response?.data?.detail || err.message));
+      setError('❌ Download failed: ' + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -351,11 +387,11 @@ function App() {
         }
       }
 
-      setSuccess('Dataset deleted successfully!');
+      setSuccess('✅ Dataset deleted successfully!');
 
     } catch (err) {
       console.error('Delete failed:', err);
-      setError('Delete failed: ' + (err.response?.data?.detail || err.message));
+      setError('❌ Delete failed: ' + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -369,7 +405,7 @@ function App() {
       <header className="app-header">
         <div className="container">
           <h1>🔒 Synthetic Data Generator</h1>
-          <p>Privacy-safe synthetic data generation for your datasets</p>
+          <p>Privacy-safe synthetic data generation with GAN support</p>
         </div>
       </header>
 
@@ -425,7 +461,7 @@ function App() {
               {currentStep === 'upload' && (
                 <div className="step-content">
                   <h2>Upload Your Dataset</h2>
-                  <p>Upload a CSV file or ZIP archive of multiple tables</p>
+                  <p>Upload a CSV file, Excel file, or ZIP archive of multiple tables</p>
                   <FileUpload
                     onFileUpload={handleFileUpload}
                     loading={loading}
@@ -436,7 +472,7 @@ function App() {
               {currentStep === 'configure' && selectedDataset && (
                 <div className="step-content">
                   <h2>Configure Privacy Settings</h2>
-                  <p>Choose what data to mask and how to anonymize it</p>
+                  <p>Choose what data to mask and select generation method</p>
 
                   <div className="dataset-info">
                     <h3>Dataset: {selectedDataset.filename}</h3>
@@ -481,7 +517,6 @@ function App() {
                   <h2>Review Synthetic Data</h2>
                   <p>Review the quality and download your synthetic dataset</p>
 
-                  {/* Enhanced Action Buttons for Multi-Table Support */}
                   <div className="action-buttons">
                     {selectedDataset.table_count > 1 ? (
                       <button
@@ -508,7 +543,6 @@ function App() {
                     </button>
                   </div>
 
-                  {/* Relationship Viewer for Multi-Table Datasets */}
                   {selectedDataset.table_count > 1 && (
                     <RelationshipViewer
                       datasetId={selectedDataset.id}

@@ -72,7 +72,7 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
     );
   }
 
-  const summary = relationships.relationship_summary;
+  const summary = relationships.relationship_summary || {};
 
   return (
     <div className="relationship-viewer">
@@ -83,10 +83,10 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
             <strong>{relationships.table_count}</strong> tables
           </span>
           <span className="stat-item">
-            <strong>{summary.total_relationships}</strong> relationships
+            <strong>{summary.total_relationships || 0}</strong> relationships
           </span>
           <span className="stat-item">
-            <strong>{summary.tables_with_primary_keys}</strong> with primary keys
+            <strong>{summary.tables_with_primary_keys || 0}</strong> with primary keys
           </span>
         </div>
       </div>
@@ -96,13 +96,13 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
           <div className="generation-order">
             <h5>📋 Generation Order</h5>
             <div className="order-flow">
-              {summary.generation_order.map((table, index) => (
+              {(summary.generation_order || []).map((table, index) => (
                 <React.Fragment key={table}>
                   <div className="table-node">
                     <span className="table-name">{table}</span>
                     <span className="table-order">{index + 1}</span>
                   </div>
-                  {index < summary.generation_order.length - 1 && (
+                  {index < (summary.generation_order || []).length - 1 && (
                     <div className="flow-arrow">→</div>
                   )}
                 </React.Fragment>
@@ -116,7 +116,7 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
           <div className="relationships-details">
             <h5>🔍 Relationship Details</h5>
             <div className="relationship-list">
-              {summary.relationship_details.map((rel, index) => (
+              {(summary.relationship_details || []).map((rel, index) => (
                 <div key={index} className="relationship-item">
                   <div className="relationship-description">
                     {rel.description}

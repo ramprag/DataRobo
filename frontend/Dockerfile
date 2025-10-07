@@ -7,7 +7,7 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 #COPY /backend/requirements.txt ./requirements.txt
-
+RUN npm install jszip
 # Install all dependencies based on the lock file.
 # This is done before copying the source code to optimize Docker's layer caching.
 RUN npm install

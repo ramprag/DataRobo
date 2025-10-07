@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
 import './FileUpload.css';
+import JSZip from 'jszip';
+
 
 const FileUpload = ({ onFileUpload, loading }) => {
   const [dragOver, setDragOver] = useState(false);
@@ -221,39 +223,39 @@ David Brown,david.brown@email.com,35,Phoenix,90000`;
 // Helper function to create sample multi-table ZIP
 async function createSampleMultiTableZip() {
   try {
-    // We'll simulate this with a simple approach since we can't create real ZIP files in browser
-    // In a real implementation, you'd use a library like JSZip
-
-    // For now, we'll create a specially named file that the backend will recognize as multi-table
     const customersData = `customer_id,first_name,last_name,email,registration_date
 1,Alice,Johnson,alice.j@email.com,2023-01-15
 2,Bob,Williams,bob.w@email.com,2023-02-20
-3,Carol,Davis,carol.d@email.com,2023-03-10`;
+3,Carol,Davis,carol.d@email.com,2023-03-10
+4,Daniel,Miller,daniel.m@email.com,2023-04-05
+5,Eva,Garcia,eva.g@email.com,2023-05-12`;
 
     const ordersData = `order_id,customer_id,product_name,amount,order_date
-101,1,Laptop,1200.50,2023-06-15
-102,2,Phone,899.99,2023-06-20
-103,1,Tablet,499.99,2023-07-10
-104,3,Headphones,199.99,2023-07-15`;
+101,1,Laptop Pro,1299.99,2023-06-15
+102,2,Smartphone X,899.99,2023-06-20
+103,1,Wireless Headphones,199.99,2023-07-10
+104,3,Tablet Ultra,649.99,2023-07-15
+105,2,Smart Watch,299.99,2023-08-01`;
 
-    // Create a text file that simulates multi-table data
-    const combinedData = `# Multi-table sample data (customers and orders)
-# This demonstrates related tables with customer_id as the linking key
+    const productsData = `product_id,product_name,category,price
+1,Laptop Pro,Electronics,1299.99
+2,Smartphone X,Electronics,899.99
+3,Wireless Headphones,Audio,199.99
+4,Tablet Ultra,Electronics,649.99
+5,Smart Watch,Wearables,299.99`;
 
-=== customers.csv ===
-${customersData}
+    const zip = new JSZip();
+    zip.file('customers.csv', customersData);
+    zip.file('orders.csv', ordersData);
+    zip.file('products.csv', productsData);
 
-=== orders.csv ===
-${ordersData}`;
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const file = new File([blob], 'sample_multi_table.zip', { type: 'application/zip' });
 
-    const blob = new Blob([combinedData], { type: 'text/plain' });
-    const file = new File([blob], 'sample_multi_table.txt', { type: 'text/plain' });
-
-    alert('Note: This is a simplified multi-table demo. In production, upload a ZIP file containing multiple CSV files.');
     return file;
   } catch (error) {
-    console.error('Error creating sample multi-table data:', error);
-    alert('Error creating sample data. Please try uploading your own ZIP file.');
+    console.error('Error creating sample multi-table ZIP:', error);
+    alert('Error creating sample data. Please create your own ZIP file with multiple CSVs.');
     return null;
   }
 }

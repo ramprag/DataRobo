@@ -1,104 +1,67 @@
 version: '3.8'
 
 services:
-  # Backend API Service
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    container_name: synthetic-data-backend
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://syntheticdata:password123@db:5432/syntheticdata
-      - PYTHONPATH=/app
-      - LOG_LEVEL=INFO
     volumes:
       - ./backend:/app
-      - synthetic_data:/app/uploads
-      - synthetic_results:/app/synthetic
-    depends_on:
-      - db
-    restart: unless-stopped
+      - backend-uploads:/app/uploads
+      - backend-synthetic:/app/synthetic
+      - backend-logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+      # GAN Configuration
+      - DEFAULT_GAN_MODEL=ctgan
+      - GAN_EPOCHS=100
+      - USE_GPU=false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - synthetic-data-network
 
-  # Frontend Service
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    container_name: synthetic-data-frontend
     ports:
       - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     environment:
       - REACT_APP_API_URL=http://localhost:8000
-    depends_on:
-      - backend
-    restart: unless-stopped
-
-  # PostgreSQL Database
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=syntheticdata
-      - POSTGRES_USER=syntheticdata
-      - POSTGRES_PASSWORD=password123
-      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U syntheticdata -d syntheticdata"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Redis for Caching (Optional)
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 3s
       retries: 3
-
-  # Nginx Reverse Proxy (Production)
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - backend
-      - frontend
+      start_period: 5s
     restart: unless-stopped
-    profiles:
-      - production
+    networks:
+      - synthetic-data-network
 
 volumes:
-  postgres_data:
+  backend-uploads:
     driver: local
-  redis_data:
+  backend-synthetic:
     driver: local
-  synthetic_data:
-    driver: local
-  synthetic_results:
+  backend-logs:
     driver: local
 
 networks:
-  default:
-    name: synthetic-data-network
+  synthetic-data-network:
+    driver: bridge
