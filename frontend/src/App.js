@@ -546,10 +546,7 @@ function App() {
                   {selectedDataset.table_count > 1 && (
                     <RelationshipViewer
                       datasetId={selectedDataset.id}
-                      relationshipData={{
-                        table_count: selectedDataset.table_count,
-                        relationship_summary: selectedDataset.relationship_summary
-                      }}
+                      datasetStatus={selectedDataset.status}
                     />
                   )}
 

@@ -56,6 +56,8 @@ class DatasetResponse(BaseModel):
     status: str
     row_count: Optional[int] = None
     column_count: Optional[int] = None
+    relationships: Optional[Dict[str, Any]] = None
+    relationship_summary: Optional[Dict[str, Any]] = None
     table_count: Optional[int] = 1
     created_at: str
     file_size: Optional[int] = None
@@ -173,7 +175,19 @@ async def get_dataset(dataset_id: str):
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     dataset = datasets_db[dataset_id]
-    return DatasetResponse(**dataset)
+
+    # Ensure we return the complete dataset including relationships
+    return DatasetResponse(**{
+        **dataset,
+        "relationships": dataset.get("relationships", {}),
+        "relationship_summary": dataset.get("relationship_summary", {
+            "total_relationships": 0,
+            "tables_with_primary_keys": 0,
+            "tables_with_foreign_keys": 0,
+            "generation_order": [],
+            "relationship_details": []
+        })
+    })
 
 @app.get("/api/datasets", response_model=List[DatasetResponse])
 async def list_datasets():

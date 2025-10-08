@@ -1,14 +1,21 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import './RelationshipViewer.css';
 
-const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
+const RelationshipViewer = ({ datasetId, relationshipData }) => {
   const [relationships, setRelationships] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const fetchRelationships = useCallback(async () => {
-    if (!datasetId) return;
+  useEffect(() => {
+    if (datasetId && !relationshipData) {
+      fetchRelationships();
+    } else if (relationshipData) {
+      console.log('RelationshipViewer - Received relationship data:', relationshipData);
+      setRelationships(relationshipData);
+    }
+  }, [datasetId, relationshipData]);
 
+  const fetchRelationships = async () => {
     try {
       setLoading(true);
       setError(null);
@@ -16,12 +23,12 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
       const apiUrl = process.env.REACT_APP_API_URL || '';
       const url = `${apiUrl}/api/datasets/${datasetId}/relationships`;
 
-      console.log('Fetching relationships from:', url);
+      console.log('RelationshipViewer - Fetching from:', url);
       const response = await fetch(url);
 
       if (response.ok) {
         const data = await response.json();
-        console.log('Received relationship data:', data);
+        console.log('RelationshipViewer - Fetched relationship data:', data);
         setRelationships(data);
       } else {
         throw new Error('Failed to load relationships');
@@ -32,40 +39,9 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
     } finally {
       setLoading(false);
     }
-  }, [datasetId]);
+  };
 
-  useEffect(() => {
-    if (relationshipData) {
-      console.log('Using provided relationship data:', relationshipData);
-      setRelationships(relationshipData);
-    } else if (datasetId) {
-      fetchRelationships();
-    }
-  }, [datasetId, relationshipData, fetchRelationships]);
-
-  // Poll for updates when status is processing or completed
-  useEffect(() => {
-    if (!datasetId) return;
-
-    let intervalId;
-
-    if (datasetStatus === 'processing') {
-      // Poll every 2 seconds while processing
-      intervalId = setInterval(() => {
-        console.log('Polling for relationship updates...');
-        fetchRelationships();
-      }, 2000);
-    } else if (datasetStatus === 'completed' && !relationships?.relationship_summary?.total_relationships) {
-      // Fetch once when completed if no relationships yet
-      fetchRelationships();
-    }
-
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [datasetId, datasetStatus, relationships, fetchRelationships]);
-
-  if (loading && !relationships) {
+  if (loading) {
     return (
       <div className="relationship-viewer loading">
         <h4>🔗 Table Relationships</h4>
@@ -77,7 +53,7 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
     );
   }
 
-  if (error && !relationships) {
+  if (error) {
     return (
       <div className="relationship-viewer error">
         <h4>🔗 Table Relationships</h4>
@@ -90,6 +66,9 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
       </div>
     );
   }
+
+  // Debug: Log the relationships object
+  console.log('RelationshipViewer - Current relationships state:', relationships);
 
   if (!relationships) {
     return (
@@ -111,10 +90,11 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
   }
 
   const summary = relationships.relationship_summary || {};
+  console.log('RelationshipViewer - Relationship summary:', summary);
+
+  // Check total relationships properly
   const totalRelationships = summary.total_relationships || 0;
   const relationshipDetails = summary.relationship_details || [];
-
-  console.log('Rendering with:', { totalRelationships, relationshipDetails, summary });
 
   return (
     <div className="relationship-viewer">
@@ -181,18 +161,13 @@ const RelationshipViewer = ({ datasetId, relationshipData, datasetStatus }) => {
         <div className="no-relationships">
           <p>⚠️ No relationships detected between tables.</p>
           <p>Each table will be generated independently.</p>
-          {process.env.NODE_ENV === 'development' && (
-            <details style={{ marginTop: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
-              <summary>Debug Information</summary>
-              <pre style={{ textAlign: 'left', fontSize: '0.75rem', overflow: 'auto' }}>
-                {JSON.stringify({
-                  summary,
-                  relationships,
-                  datasetStatus
-                }, null, 2)}
-              </pre>
-            </details>
-          )}
+          {/* Debug info */}
+          <details style={{ marginTop: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
+            <summary>Debug Information</summary>
+            <pre style={{ textAlign: 'left', fontSize: '0.75rem', overflow: 'auto' }}>
+              {JSON.stringify({ summary, relationships }, null, 2)}
+            </pre>
+          </details>
         </div>
       )}
 
