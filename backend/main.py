@@ -356,18 +356,40 @@ async def get_dataset_relationships(dataset_id: str):
 
     dataset = datasets_db[dataset_id]
 
-    return {
+    # Log what we have
+    logger.info(f"Dataset status: {dataset.get('status')}")
+    logger.info(f"Table count: {dataset.get('table_count', 1)}")
+    logger.info(f"Has relationships: {'relationships' in dataset}")
+    logger.info(f"Has relationship_summary: {'relationship_summary' in dataset}")
+
+    if 'relationship_summary' in dataset:
+        logger.info(f"Relationship summary: {dataset['relationship_summary']}")
+
+    # Build response
+    table_count = dataset.get("table_count", 1)
+    relationships = dataset.get("relationships", {})
+
+    # Get relationship summary with proper defaults
+    relationship_summary = dataset.get("relationship_summary", {
+        "total_relationships": 0,
+        "tables_with_primary_keys": 0,
+        "tables_with_foreign_keys": 0,
+        "generation_order": [Path(dataset["filename"]).stem] if "filename" in dataset else [],
+        "relationship_details": []
+    })
+
+    response = {
         "dataset_id": dataset_id,
-        "table_count": dataset.get("table_count", 1),
-        "relationships": dataset.get("relationships", {}),
-        "relationship_summary": dataset.get("relationship_summary", {
-            "total_relationships": 0,
-            "tables_with_primary_keys": 0,
-            "tables_with_foreign_keys": 0,
-            "generation_order": [Path(dataset["filename"]).stem],
-            "relationship_details": []
-        })
+        "table_count": table_count,
+        "relationships": relationships,
+        "relationship_summary": relationship_summary,
+        "status": dataset.get("status", "unknown")
     }
+
+    # Log the response
+    logger.info(f"Returning relationship response: {json.dumps(response, indent=2)}")
+
+    return response
 
 @app.get("/api/datasets/{dataset_id}/preview")
 async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str = None):
