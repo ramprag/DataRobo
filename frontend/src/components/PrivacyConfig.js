@@ -300,22 +300,20 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
               </small>
             </div>
 
+
             <div className="config-section">
               <h4>🤖 Generation Method</h4>
 
               <label className="checkbox-label">
                 <input
                   type="checkbox"
-                  checked={privacyConfig.use_gan}
-                  onChange={(e) => setPrivacyConfig({
-                    ...privacyConfig,
-                    use_gan: e.target.checked
-                  })}
+                  checked={config.use_gan}  // ✅ FIXED: was privacyConfig
+                  onChange={(e) => handleConfigChange('use_gan', e.target.checked)}  // ✅ FIXED
                 />
                 <span>Use GAN (CTGAN) for High-Quality Synthesis</span>
               </label>
 
-              {privacyConfig.use_gan && (
+              {config.use_gan && (  // ✅ FIXED
                 <div className="input-group">
                   <label>
                     Training Epochs:
@@ -324,22 +322,21 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
                       min="50"
                       max="1000"
                       step="50"
-                      value={privacyConfig.gan_epochs}
-                      onChange={(e) => setPrivacyConfig({
-                        ...privacyConfig,
-                        gan_epochs: parseInt(e.target.value)
-                      })}
+                      value={config.gan_epochs}  // ✅ FIXED
+                      onChange={(e) => handleConfigChange('gan_epochs', parseInt(e.target.value))}  // ✅ FIXED
                     />
                   </label>
                   <small>Higher = better quality but slower (recommended: 300)</small>
                 </div>
               )}
             </div>
+              )}
 
             <div className="form-group">
               <label>📝 Custom Fields to Mask</label>
               <div className="custom-fields">
                 <div className="custom-field-input">
+                <div className="custom-field-input">Use GAN (CTGAN) for High-Quality Synthesis</div>
                   <input
                     type="text"
                     value={customField}

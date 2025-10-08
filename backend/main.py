@@ -116,7 +116,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         # For ZIP files, analyze content
         if file.filename.lower().endswith('.zip'):
-            enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
+            enhanced_generator = EnhancedSyntheticDataGenerator()  # Use defaults
             tables = enhanced_generator._extract_tables(content, file.filename)
 
             total_rows = sum(len(df) for df in tables.values())
@@ -451,7 +451,7 @@ async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
 
-                enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
+                enhanced_generator = EnhancedSyntheticDataGenerator()
                 tables = enhanced_generator._extract_tables(file_data, dataset["filename"])
 
                 if not tables:
