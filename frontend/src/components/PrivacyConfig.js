@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './PrivacyConfig.css';
 
-// REMOVED: import GANConfig from './GANConfig'; - THIS WAS CAUSING THE ERROR
-
 const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
   const [config, setConfig] = useState({
     mask_emails: true,
@@ -300,43 +298,51 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
               </small>
             </div>
 
-
-            <div className="config-section">
+            <div className="form-group" style={{ marginTop: '1.5rem' }}>
               <h4>🤖 Generation Method</h4>
 
-              <label className="checkbox-label">
+              <label className="config-option" style={{ marginTop: '0.5rem' }}>
                 <input
                   type="checkbox"
-                  checked={config.use_gan}  // ✅ FIXED: was privacyConfig
-                  onChange={(e) => handleConfigChange('use_gan', e.target.checked)}  // ✅ FIXED
+                  checked={config.use_gan}
+                  onChange={(e) => handleConfigChange('use_gan', e.target.checked)}
                 />
-                <span>Use GAN (CTGAN) for High-Quality Synthesis</span>
+                <div className="option-content">
+                  <span className="option-icon">🧠</span>
+                  <div className="option-text">
+                    <strong>Use GAN (CTGAN) for High-Quality Synthesis</strong>
+                    <small>Uses deep learning to generate more realistic synthetic data</small>
+                  </div>
+                </div>
               </label>
 
-              {config.use_gan && (  // ✅ FIXED
-                <div className="input-group">
-                  <label>
-                    Training Epochs:
+              {config.use_gan && (
+                <div style={{ marginTop: '1rem', paddingLeft: '2rem' }}>
+                  <label htmlFor="gan-epochs">
+                    <strong>Training Epochs:</strong>
                     <input
+                      id="gan-epochs"
                       type="number"
                       min="50"
                       max="1000"
                       step="50"
-                      value={config.gan_epochs}  // ✅ FIXED
-                      onChange={(e) => handleConfigChange('gan_epochs', parseInt(e.target.value))}  // ✅ FIXED
+                      value={config.gan_epochs}
+                      onChange={(e) => handleConfigChange('gan_epochs', parseInt(e.target.value))}
+                      className="form-control"
+                      style={{ marginTop: '0.5rem' }}
                     />
                   </label>
-                  <small>Higher = better quality but slower (recommended: 300)</small>
+                  <small className="form-help">
+                    Higher epochs = better quality but slower generation (recommended: 300)
+                  </small>
                 </div>
               )}
             </div>
-              )}
 
-            <div className="form-group">
+            <div className="form-group" style={{ marginTop: '1.5rem' }}>
               <label>📝 Custom Fields to Mask</label>
               <div className="custom-fields">
                 <div className="custom-field-input">
-                <div className="custom-field-input">Use GAN (CTGAN) for High-Quality Synthesis</div>
                   <input
                     type="text"
                     value={customField}
