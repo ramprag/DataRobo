@@ -72,6 +72,8 @@ class PrivacyConfig(BaseModel):
     mask_addresses: bool = True
     mask_ssn: bool = True
     custom_fields: List[str] = []
+    use_gan: bool = True  # ✅ ADD
+    gan_epochs: int = 300  # ✅ ADD
     anonymization_method: str = "faker"
 
 class GenerateSyntheticRequest(BaseModel):
@@ -114,7 +116,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         # For ZIP files, analyze content
         if file.filename.lower().endswith('.zip'):
-            enhanced_generator = EnhancedSyntheticDataGenerator()
+            enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
             tables = enhanced_generator._extract_tables(content, file.filename)
 
             total_rows = sum(len(df) for df in tables.values())
@@ -209,7 +211,7 @@ async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_c
         dataset = datasets_db[dataset_id]
         datasets_db[dataset_id]["status"] = "processing"
 
-        enhanced_generator = EnhancedSyntheticDataGenerator()
+        enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
 
         with open(dataset["file_path"], "rb") as f:
             file_data = f.read()
@@ -449,7 +451,7 @@ async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
 
-                enhanced_generator = EnhancedSyntheticDataGenerator()
+                enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
                 tables = enhanced_generator._extract_tables(file_data, dataset["filename"])
 
                 if not tables:
