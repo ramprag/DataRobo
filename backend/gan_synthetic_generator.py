@@ -76,7 +76,10 @@ class GANSyntheticDataGenerator:
             try:
                 synthetic_df = self._generate_with_ctgan(generate_df, num_rows)
             except Exception as e:
-                logger.error(f"CTGAN generation failed: {e}, falling back to statistical method")
+                import traceback
+                logger.error(f"CTGAN generation failed: {str(e)}")
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                logger.warning("Falling back to statistical method")
                 synthetic_df = self._generate_statistical(generate_df, num_rows)
         else:
             synthetic_df = self._generate_statistical(generate_df, num_rows)
