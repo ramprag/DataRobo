@@ -1,4 +1,4 @@
-// frontend/src/App.js - Fixed version with better error handling
+// frontend/src/App.js - Enhanced with Import/Export and AI Fabricate
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -13,13 +13,15 @@ import QualityReport from './components/QualityReport';
 import DebugPanel from './components/DebugPanel';
 import DataPreview from './components/DataPreview';
 import RelationshipViewer from './components/RelationshipViewer';
+import ImportExportModal from './components/ImportExportModal';
+import AIFabricate from './components/AIFabricate';
 
 // API Configuration
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000, // Increased timeout for large files
+  timeout: 120000,
   headers: {
     'Content-Type': 'application/json',
   }
@@ -41,6 +43,11 @@ function App() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [pollIntervalRef, setPollIntervalRef] = useState(null);
+
+  // New states for Import/Export and AI Fabricate
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [generationMode, setGenerationMode] = useState('schema'); // 'schema' or 'ai'
 
   useEffect(() => {
     fetchDatasets();
@@ -80,7 +87,6 @@ function App() {
       setError(null);
       setSuccess(null);
 
-      // Validate file before upload
       const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
       const allowedTypes = ['.csv', '.xlsx', '.xls', '.zip'];
 
@@ -88,7 +94,6 @@ function App() {
         throw new Error('Invalid file type. Please upload CSV, Excel, or ZIP files only.');
       }
 
-      // Check file size (100MB for ZIP, 50MB for others)
       const maxSize = fileExtension === '.zip' ? 100 * 1024 * 1024 : 50 * 1024 * 1024;
       if (file.size > maxSize) {
         const maxSizeLabel = fileExtension === '.zip' ? '100MB' : '50MB';
@@ -104,7 +109,7 @@ function App() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 180000, // 3 minutes for large files
+        timeout: 180000,
         onUploadProgress: (progressEvent) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
           console.log('Upload progress:', percentCompleted + '%');
@@ -113,7 +118,6 @@ function App() {
 
       const newDataset = response.data;
 
-      // Validate response
       if (!newDataset || !newDataset.id) {
         throw new Error('Invalid response from server');
       }
@@ -122,7 +126,6 @@ function App() {
       setSelectedDataset(newDataset);
       setCurrentStep('configure');
 
-      // Different success message for ZIP files
       const isZip = fileExtension === '.zip';
       const successMsg = isZip
         ? `✅ Multi-table dataset uploaded! ${newDataset.table_count || 0} tables detected.`
@@ -145,7 +148,7 @@ function App() {
       }
 
       setError('❌ ' + errorMessage);
-      setCurrentStep('upload'); // Go back to upload step on error
+      setCurrentStep('upload');
 
     } finally {
       setLoading(false);
@@ -400,12 +403,80 @@ function App() {
     setSuccess(null);
   };
 
+  // New handlers for Import/Export
+  const handleImport = (source, file) => {
+    if (source === 'local' && file) {
+      handleFileUpload(file);
+      setShowImportModal(false);
+    } else {
+      // Future implementation for S3, Azure, Database
+      alert(`${source} import will be implemented soon!`);
+    }
+  };
+
+  const handleExport = (destination) => {
+    if (!selectedDataset) {
+      alert('Please select a dataset first');
+      return;
+    }
+
+    if (destination === 'local') {
+      if (selectedDataset.table_count > 1) {
+        handleDownloadMultiTable();
+      } else {
+        handleDownload();
+      }
+      setShowExportModal(false);
+    } else {
+      // Future implementation for S3, Azure, Database
+      alert(`${destination} export will be implemented soon!`);
+    }
+  };
+
+  // Handler for AI Fabricate
+  const handleAIFabricate = (prompt, config) => {
+    console.log('AI Fabricate request:', prompt, config);
+    alert('AI Fabricate feature coming soon! Our team is integrating advanced LLM capabilities.');
+    // Future implementation
+  };
+
   return (
     <div className="App">
       <header className="app-header">
         <div className="container">
-          <h1>🔒 Synthetic Data Generator</h1>
-          <p>Privacy-safe synthetic data generation with GAN support</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h1>🔒 GSTAN - Synthetic Data Generator</h1>
+              <p>Privacy-safe synthetic data generation with GAN support</p>
+            </div>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="btn"
+                style={{
+                  background: 'white',
+                  color: '#667eea',
+                  border: '2px solid white',
+                  fontWeight: '600'
+                }}
+              >
+                📥 Import Data
+              </button>
+              <button
+                onClick={() => setShowExportModal(true)}
+                className="btn"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  color: 'white',
+                  border: '2px solid white',
+                  fontWeight: '600'
+                }}
+                disabled={!selectedDataset}
+              >
+                📤 Export Data
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -462,10 +533,70 @@ function App() {
                 <div className="step-content">
                   <h2>Upload Your Dataset</h2>
                   <p>Upload a CSV file, Excel file, or ZIP archive of multiple tables</p>
-                  <FileUpload
-                    onFileUpload={handleFileUpload}
-                    loading={loading}
-                  />
+
+                  {/* Generation Mode Selector */}
+                  <div style={{
+                    display: 'flex',
+                    gap: '1rem',
+                    marginBottom: '2rem',
+                    padding: '1rem',
+                    background: 'linear-gradient(135deg, #667eea15 0%, #764ba215 100%)',
+                    borderRadius: '12px',
+                    border: '2px solid #e5e7eb'
+                  }}>
+                    <button
+                      onClick={() => setGenerationMode('schema')}
+                      className="btn"
+                      style={{
+                        flex: 1,
+                        background: generationMode === 'schema' ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'white',
+                        color: generationMode === 'schema' ? 'white' : '#667eea',
+                        border: '2px solid #667eea',
+                        padding: '1rem',
+                        fontSize: '1rem'
+                      }}
+                    >
+                      📊 Schema-Based Generation
+                    </button>
+                    <button
+                      onClick={() => setGenerationMode('ai')}
+                      className="btn"
+                      style={{
+                        flex: 1,
+                        background: generationMode === 'ai' ? 'linear-gradient(135deg, #a855f7 0%, #ec4899 100%)' : 'white',
+                        color: generationMode === 'ai' ? 'white' : '#a855f7',
+                        border: '2px solid #a855f7',
+                        padding: '1rem',
+                        fontSize: '1rem',
+                        position: 'relative'
+                      }}
+                    >
+                      ✨ AI Fabricate
+                      <span style={{
+                        position: 'absolute',
+                        top: '-8px',
+                        right: '-8px',
+                        background: '#ec4899',
+                        color: 'white',
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        fontSize: '0.7rem',
+                        fontWeight: '700'
+                      }}>NEW</span>
+                    </button>
+                  </div>
+
+                  {generationMode === 'schema' ? (
+                    <FileUpload
+                      onFileUpload={handleFileUpload}
+                      loading={loading}
+                    />
+                  ) : (
+                    <AIFabricate
+                      onGenerate={handleAIFabricate}
+                      loading={loading}
+                    />
+                  )}
                 </div>
               )}
 
@@ -580,9 +711,25 @@ function App() {
 
       <footer className="app-footer">
         <div className="container">
-          <p>&copy; 2024 Synthetic Data Generator. Built with privacy and security in mind.</p>
+          <p>&copy; 2024 GSTAN Synthetic Data Generator. Built with privacy and security in mind.</p>
         </div>
       </footer>
+
+      {/* Import/Export Modals */}
+      <ImportExportModal
+        show={showImportModal}
+        mode="import"
+        onClose={() => setShowImportModal(false)}
+        onSubmit={handleImport}
+      />
+
+      <ImportExportModal
+        show={showExportModal}
+        mode="export"
+        onClose={() => setShowExportModal(false)}
+        onSubmit={handleExport}
+        selectedDataset={selectedDataset}
+      />
 
       <DebugPanel
         selectedDataset={selectedDataset}
