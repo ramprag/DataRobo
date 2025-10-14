@@ -1,3 +1,4 @@
+# backend/main.py
 import os
 import uuid
 import pandas as pd
@@ -64,6 +65,7 @@ class DatasetResponse(BaseModel):
     error_message: Optional[str] = None
     quality_metrics: Optional[Dict[str, Any]] = None
     privacy_config: Optional[Dict[str, Any]] = None
+    progress: Optional[int] = 0
 
 class PrivacyConfig(BaseModel):
     mask_emails: bool = True
@@ -72,8 +74,8 @@ class PrivacyConfig(BaseModel):
     mask_addresses: bool = True
     mask_ssn: bool = True
     custom_fields: List[str] = []
-    use_gan: bool = True  # ✅ ADD
-    gan_epochs: int = 300  # ✅ ADD
+    use_gan: bool = True
+    gan_epochs: int = 50  # lowered default for faster generation
     anonymization_method: str = "faker"
 
 class GenerateSyntheticRequest(BaseModel):
@@ -116,14 +118,19 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         # For ZIP files, analyze content
         if file.filename.lower().endswith('.zip'):
-            enhanced_generator = EnhancedSyntheticDataGenerator()  # Use defaults
+            enhanced_generator = EnhancedSyntheticDataGenerator()
             tables = enhanced_generator._extract_tables(content, file.filename)
 
             total_rows = sum(len(df) for df in tables.values())
             total_columns = sum(len(df.columns) for df in tables.values())
             table_count = len(tables)
 
+            # Analyze relationships immediately on upload
+            relationships = enhanced_generator._detect_relationships(tables)
+            relationship_summary = enhanced_generator._create_relationship_summary(relationships, tables)
+
             logger.info(f"ZIP contains {table_count} tables with {total_rows} total rows")
+            logger.info(f"Detected {relationship_summary['total_relationships']} relationships")
         else:
             # Single file analysis
             from data_processor import DataProcessor
@@ -137,6 +144,14 @@ async def upload_dataset(file: UploadFile = File(...)):
             total_rows = len(df)
             total_columns = len(df.columns)
             table_count = 1
+            relationships = {}
+            relationship_summary = {
+                "total_relationships": 0,
+                "tables_with_primary_keys": 0,
+                "tables_with_foreign_keys": 0,
+                "generation_order": [Path(file.filename).stem],
+                "relationship_details": []
+            }
 
         dataset = {
             "id": file_id,
@@ -150,7 +165,10 @@ async def upload_dataset(file: UploadFile = File(...)):
             "created_at": datetime.utcnow().isoformat(),
             "error_message": None,
             "quality_metrics": None,
-            "privacy_config": None
+            "privacy_config": None,
+            "relationships": relationships,
+            "relationship_summary": relationship_summary,
+            "progress": 0
         }
 
         datasets_db[file_id] = dataset
@@ -162,6 +180,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"Unexpected upload error: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.post("/api/datasets/upload", response_model=DatasetResponse)
@@ -178,7 +197,7 @@ async def get_dataset(dataset_id: str):
 
     dataset = datasets_db[dataset_id]
 
-    # Ensure we return the complete dataset including relationships
+    # Return complete dataset with all fields
     return DatasetResponse(**{
         **dataset,
         "relationships": dataset.get("relationships", {}),
@@ -188,7 +207,8 @@ async def get_dataset(dataset_id: str):
             "tables_with_foreign_keys": 0,
             "generation_order": [],
             "relationship_details": []
-        })
+        }),
+        "progress": dataset.get("progress", 0)
     })
 
 @app.get("/api/datasets", response_model=List[DatasetResponse])
@@ -200,7 +220,7 @@ async def list_datasets():
     return datasets_list
 
 async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_config: PrivacyConfig, num_rows: Optional[int] = None):
-    """Enhanced background task for multi-table support"""
+    """Enhanced background task for multi-table support with progress tracking"""
     try:
         logger.info(f"Starting enhanced synthetic data generation for dataset: {dataset_id}")
 
@@ -210,21 +230,31 @@ async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_c
 
         dataset = datasets_db[dataset_id]
         datasets_db[dataset_id]["status"] = "processing"
+        datasets_db[dataset_id]["progress"] = 0
 
-        enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan,gan_epochs=privacy_config.gan_epochs)
+        enhanced_generator = EnhancedSyntheticDataGenerator(use_gan=privacy_config.use_gan, gan_epochs=privacy_config.gan_epochs)
 
         with open(dataset["file_path"], "rb") as f:
             file_data = f.read()
 
         filename = dataset["filename"]
 
+        # parsing
+        datasets_db[dataset_id]["progress"] = 10
+
         result = enhanced_generator.process_upload(file_data, filename, privacy_config)
+
+        # generation done, write files
+        datasets_db[dataset_id]["progress"] = 85
 
         synthetic_paths = {}
         for table_name, synthetic_df in result['tables'].items():
             synthetic_path = f"synthetic/{dataset_id}_{table_name}_synthetic.csv"
             synthetic_df.to_csv(synthetic_path, index=False)
             synthetic_paths[table_name] = synthetic_path
+
+        # validating/finalizing
+        datasets_db[dataset_id]["progress"] = 95
 
         datasets_db[dataset_id].update({
             "status": "completed",
@@ -234,10 +264,12 @@ async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_c
             "privacy_config": privacy_config.dict(),
             "table_count": result['table_count'],
             "relationships": result['relationships'],
-            "relationship_summary": result['relationship_summary']
+            "relationship_summary": result['relationship_summary'],
+            "progress": 100
         })
 
         logger.info(f"Dataset {dataset_id} generation completed successfully")
+        logger.info(f"Relationships preserved: {result['relationship_summary']['total_relationships']}")
 
     except Exception as e:
         logger.error(f"Error in enhanced generation: {e}")
@@ -245,6 +277,8 @@ async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_c
         if dataset_id in datasets_db:
             datasets_db[dataset_id]["status"] = "failed"
             datasets_db[dataset_id]["error_message"] = str(e)
+            if "progress" not in datasets_db[dataset_id]:
+                datasets_db[dataset_id]["progress"] = 0
 
 @app.post("/api/datasets/{dataset_id}/generate-synthetic")
 async def generate_synthetic_data(
@@ -312,7 +346,6 @@ async def download_synthetic_data(dataset_id: str):
             filename=f"{dataset['filename']}_synthetic.csv"
         )
 
-    # If multiple tables, return first one
     if "synthetic_paths" in dataset and dataset["synthetic_paths"]:
         first_path = list(dataset["synthetic_paths"].values())[0]
         if os.path.exists(first_path):
@@ -361,7 +394,6 @@ async def download_synthetic_data_zip(dataset_id: str):
         headers={"Content-Disposition": f"attachment; filename={dataset['filename']}_synthetic.zip"}
     )
 
-
 @app.get("/api/datasets/{dataset_id}/relationships")
 async def get_dataset_relationships(dataset_id: str):
     """Get relationship information"""
@@ -372,20 +404,11 @@ async def get_dataset_relationships(dataset_id: str):
 
     dataset = datasets_db[dataset_id]
 
-    # Log what we have
     logger.info(f"Dataset status: {dataset.get('status')}")
     logger.info(f"Table count: {dataset.get('table_count', 1)}")
-    logger.info(f"Has relationships: {'relationships' in dataset}")
-    logger.info(f"Has relationship_summary: {'relationship_summary' in dataset}")
 
-    if 'relationship_summary' in dataset:
-        logger.info(f"Relationship summary: {dataset['relationship_summary']}")
-
-    # Build response
     table_count = dataset.get("table_count", 1)
     relationships = dataset.get("relationships", {})
-
-    # Get relationship summary with proper defaults
     relationship_summary = dataset.get("relationship_summary", {
         "total_relationships": 0,
         "tables_with_primary_keys": 0,
@@ -402,8 +425,7 @@ async def get_dataset_relationships(dataset_id: str):
         "status": dataset.get("status", "unknown")
     }
 
-    # Log the response
-    logger.info(f"Returning relationship response: {json.dumps(response, indent=2)}")
+    logger.info(f"Returning relationships: {relationship_summary['total_relationships']} found")
 
     return response
 
@@ -418,33 +440,27 @@ async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str
 
     try:
         if synthetic:
-            # Handle synthetic data preview
             if "synthetic_paths" in dataset and dataset["synthetic_paths"]:
-                # Multi-table synthetic data
                 if table_name:
                     if table_name not in dataset["synthetic_paths"]:
                         raise HTTPException(status_code=404, detail=f"Table {table_name} not found")
                     synthetic_path = dataset["synthetic_paths"][table_name]
                 else:
-                    # Return first table
                     synthetic_path = list(dataset["synthetic_paths"].values())[0]
 
                 if not os.path.exists(synthetic_path):
-                    raise HTTPException(status_code=404, detail="Synthetic data file not found")
+                  raise HTTPException(status_code=404, detail="Synthetic data file not found")
                 df = pd.read_csv(synthetic_path)
             elif "synthetic_path" in dataset and os.path.exists(dataset["synthetic_path"]):
-                # Single table synthetic data
                 df = pd.read_csv(dataset["synthetic_path"])
             else:
                 raise HTTPException(status_code=404, detail="Synthetic data not found")
         else:
-            # Handle original data preview
             if not os.path.exists(dataset["file_path"]):
                 raise HTTPException(status_code=404, detail="Original data file not found")
 
             file_path = dataset["file_path"]
 
-            # Handle ZIP files - extract and read first table
             if file_path.lower().endswith('.zip'):
                 logger.info(f"Extracting preview from ZIP file: {file_path}")
 
@@ -457,7 +473,6 @@ async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str
                 if not tables:
                     raise HTTPException(status_code=404, detail="No tables found in ZIP file")
 
-                # Get specified table or first table
                 if table_name and table_name in tables:
                     df = tables[table_name]
                     selected_table = table_name
@@ -474,7 +489,6 @@ async def preview_data(dataset_id: str, synthetic: bool = False, table_name: str
             else:
                 raise HTTPException(status_code=400, detail="Unsupported file type for preview")
 
-        # Return first 5 rows for preview
         preview_df = df.head(5)
 
         response = {
@@ -504,7 +518,6 @@ async def delete_dataset(dataset_id: str):
 
     dataset = datasets_db[dataset_id]
 
-    # Delete files
     try:
         if os.path.exists(dataset["file_path"]):
             os.remove(dataset["file_path"])
@@ -523,7 +536,6 @@ async def delete_dataset(dataset_id: str):
     except Exception as e:
         logger.warning(f"Error deleting files for dataset {dataset_id}: {e}")
 
-    # Remove from memory database
     del datasets_db[dataset_id]
     logger.info(f"Dataset {dataset_id} deleted from database")
 

@@ -35,6 +35,7 @@ RUN mkdir -p uploads synthetic logs
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV TIMEOUT=600
 
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser

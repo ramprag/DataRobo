@@ -339,11 +339,14 @@ class EnhancedSyntheticDataGenerator:
         if filename.lower().endswith('.zip'):
             with zipfile.ZipFile(io.BytesIO(file_data)) as zip_file:
                 for file_info in zip_file.filelist:
-                    if file_info.filename.lower().endswith(('.csv', '.xlsx', '.xls')):
-                        with zip_file.open(file_info) as f:
-                            table_name = Path(file_info.filename).stem
-                            tables[table_name] = self._read_table_file(f.read(), file_info.filename)
-                            logger.info(f"Extracted table '{table_name}' with {len(tables[table_name])} rows")
+                    if file_info.filename.lower().endswith(('.csv', '.xlsx', '.xls')) and not file_info.filename.startswith('__MACOSX'):
+                        try:
+                            with zip_file.open(file_info) as f:
+                                table_name = Path(file_info.filename).stem
+                                tables[table_name] = self._read_table_file(f.read(), file_info.filename)
+                                logger.info(f"Extracted table '{table_name}' with {len(tables[table_name])} rows")
+                        except Exception as e:
+                            logger.warning(f"Failed to extract {file_info.filename}: {e}")
         elif filename.lower().endswith(('.csv', '.xlsx', '.xls')):
             table_name = Path(filename).stem
             tables[table_name] = self._read_table_file(file_data, filename)
@@ -360,6 +363,81 @@ class EnhancedSyntheticDataGenerator:
             return pd.read_excel(io.BytesIO(file_data))
         else:
             raise ValueError(f"Unsupported file type: {filename}")
+
+    # ADD THESE MISSING METHODS FOR COMPATIBILITY WITH MAIN.PY
+    def _detect_relationships(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, List[Dict]]:
+        """
+        Detect relationships between tables (compatibility method for main.py)
+        Returns format expected by main.py upload endpoint
+        """
+        logger.info("Running relationship detection for upload analysis")
+
+        # Use the relationship detector
+        relationship_info = self.relationship_detector.analyze_tables(tables)
+
+        # Convert to format expected by main.py
+        relationships = {}
+        for table_name, fks in relationship_info['foreign_keys'].items():
+            relationships[table_name] = []
+            for fk in fks:
+                relationships[table_name].append({
+                    'foreign_key': fk['column'],
+                    'referenced_table': fk['references_table'],
+                    'referenced_key': fk['references_column'],
+                    'confidence': fk['confidence']
+                })
+
+        logger.info(f"Detected {sum(len(v) for v in relationships.values())} relationships")
+        return relationships
+
+    def _create_relationship_summary(
+        self,
+        relationships: Dict[str, List[Dict]],
+        tables: Dict[str, pd.DataFrame]
+    ) -> Dict[str, Any]:
+        """
+        Create relationship summary (compatibility method for main.py)
+        Returns format expected by main.py upload endpoint
+        """
+        logger.info("Creating relationship summary for upload response")
+
+        # Run full analysis to get all info
+        relationship_info = self.relationship_detector.analyze_tables(tables)
+
+        # Build summary in expected format
+        tables_with_pks = set()
+        tables_with_fks = set(relationships.keys())
+
+        # Identify which tables are referenced (have PKs)
+        for table_rels in relationships.values():
+            for rel in table_rels:
+                tables_with_pks.add(rel['referenced_table'])
+
+        # Create detailed relationship descriptions
+        relationship_details = []
+        for table_name, table_rels in relationships.items():
+            for rel in table_rels:
+                description = (
+                    f"{table_name}.{rel['foreign_key']} → "
+                    f"{rel['referenced_table']}.{rel['referenced_key']}"
+                )
+                relationship_details.append({
+                    'description': description,
+                    'from_table': table_name,
+                    'to_table': rel['referenced_table'],
+                    'confidence': rel['confidence']
+                })
+
+        summary = {
+            'total_relationships': len(relationship_details),
+            'tables_with_primary_keys': len(tables_with_pks),
+            'tables_with_foreign_keys': len(tables_with_fks),
+            'generation_order': relationship_info['generation_order'],
+            'relationship_details': relationship_details
+        }
+
+        logger.info(f"Relationship summary: {summary['total_relationships']} relationships found")
+        return summary
 
     def _process_single_table(self, df: pd.DataFrame, filename: str, privacy_config) -> Dict:
         """Process single table using GAN"""
@@ -534,10 +612,8 @@ class EnhancedSyntheticDataGenerator:
             summary['relationship_details'].append({
                 'description': f"{rel_info['child_table']}.{rel_info['child_column']} → {rel_info['parent_table']}.{rel_info['parent_column']}",
                 'confidence': round(rel_info['confidence'], 2),
-                'parent_table': rel_info['parent_table'],
-                'parent_column': rel_info['parent_column'],
-                'child_table': rel_info['child_table'],
-                'child_column': rel_info['child_column']
+                'from_table': rel_info['child_table'],
+                'to_table': rel_info['parent_table']
             })
 
         return summary

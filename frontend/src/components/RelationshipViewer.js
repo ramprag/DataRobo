@@ -7,11 +7,28 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (datasetId && !relationshipData) {
+    console.log('RelationshipViewer - Props received:', { datasetId, relationshipData });
+
+    if (relationshipData) {
+      // Use the relationship data passed directly
+      console.log('RelationshipViewer - Using passed relationship data');
+      setRelationships({
+        dataset_id: datasetId,
+        table_count: relationshipData.table_count || 1,
+        relationships: relationshipData.relationships || {},
+        relationship_summary: relationshipData.relationship_summary || {
+          total_relationships: 0,
+          tables_with_primary_keys: 0,
+          tables_with_foreign_keys: 0,
+          generation_order: [],
+          relationship_details: []
+        },
+        status: relationshipData.status || 'unknown'
+      });
+    } else if (datasetId) {
+      // Fetch from API
+      console.log('RelationshipViewer - Fetching from API');
       fetchRelationships();
-    } else if (relationshipData) {
-      console.log('RelationshipViewer - Received relationship data:', relationshipData);
-      setRelationships(relationshipData);
     }
   }, [datasetId, relationshipData]);
 
@@ -24,14 +41,17 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
       const url = `${apiUrl}/api/datasets/${datasetId}/relationships`;
 
       console.log('RelationshipViewer - Fetching from:', url);
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        timeout: 10000 // 10 second timeout
+      });
 
       if (response.ok) {
         const data = await response.json();
         console.log('RelationshipViewer - Fetched relationship data:', data);
         setRelationships(data);
       } else {
-        throw new Error('Failed to load relationships');
+        const errorText = await response.text();
+        throw new Error(`Failed to load relationships: ${errorText}`);
       }
     } catch (err) {
       console.error('Error fetching relationships:', err);
@@ -67,9 +87,6 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
     );
   }
 
-  // Debug: Log the relationships object
-  console.log('RelationshipViewer - Current relationships state:', relationships);
-
   if (!relationships) {
     return (
       <div className="relationship-viewer loading">
@@ -80,7 +97,8 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
   }
 
   // Check if single table
-  if (relationships.table_count <= 1) {
+  const tableCount = relationships.table_count || 0;
+  if (tableCount <= 1) {
     return (
       <div className="relationship-viewer single-table">
         <h4>📄 Single Table Dataset</h4>
@@ -90,11 +108,16 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
   }
 
   const summary = relationships.relationship_summary || {};
-  console.log('RelationshipViewer - Relationship summary:', summary);
-
-  // Check total relationships properly
   const totalRelationships = summary.total_relationships || 0;
   const relationshipDetails = summary.relationship_details || [];
+  const generationOrder = summary.generation_order || [];
+
+  console.log('RelationshipViewer - Rendering with:', {
+    totalRelationships,
+    relationshipDetails,
+    generationOrder,
+    tableCount
+  });
 
   return (
     <div className="relationship-viewer">
@@ -102,38 +125,43 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
         <h4>🔗 Table Relationships Detected</h4>
         <div className="relationship-stats">
           <span className="stat-item">
-            <strong>{relationships.table_count}</strong> tables
+            <strong>{tableCount}</strong> tables
           </span>
           <span className="stat-item">
             <strong>{totalRelationships}</strong> relationships
           </span>
           <span className="stat-item">
-            <strong>{summary.tables_with_primary_keys || 0}</strong> with primary keys
+            <strong>{summary.tables_with_primary_keys || 0}</strong> with PKs
+          </span>
+          <span className="stat-item">
+            <strong>{summary.tables_with_foreign_keys || 0}</strong> with FKs
           </span>
         </div>
       </div>
 
       {totalRelationships > 0 ? (
         <>
-          <div className="generation-order">
-            <h5>📋 Generation Order</h5>
-            <div className="order-flow">
-              {(summary.generation_order || []).map((table, index) => (
-                <React.Fragment key={table}>
-                  <div className="table-node">
-                    <span className="table-name">{table}</span>
-                    <span className="table-order">{index + 1}</span>
-                  </div>
-                  {index < (summary.generation_order || []).length - 1 && (
-                    <div className="flow-arrow">→</div>
-                  )}
-                </React.Fragment>
-              ))}
+          {generationOrder.length > 0 && (
+            <div className="generation-order">
+              <h5>📋 Generation Order</h5>
+              <div className="order-flow">
+                {generationOrder.map((table, index) => (
+                  <React.Fragment key={table}>
+                    <div className="table-node">
+                      <span className="table-name">{table}</span>
+                      <span className="table-order">{index + 1}</span>
+                    </div>
+                    {index < generationOrder.length - 1 && (
+                      <div className="flow-arrow">→</div>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+              <small className="order-explanation">
+                Parent tables are generated first to ensure referential integrity
+              </small>
             </div>
-            <small className="order-explanation">
-              Parent tables are generated first to ensure referential integrity
-            </small>
-          </div>
+          )}
 
           <div className="relationships-details">
             <h5>🔍 Relationship Details</h5>
@@ -161,23 +189,30 @@ const RelationshipViewer = ({ datasetId, relationshipData }) => {
         <div className="no-relationships">
           <p>⚠️ No relationships detected between tables.</p>
           <p>Each table will be generated independently.</p>
-          {/* Debug info */}
-          <details style={{ marginTop: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
-            <summary>Debug Information</summary>
-            <pre style={{ textAlign: 'left', fontSize: '0.75rem', overflow: 'auto' }}>
-              {JSON.stringify({ summary, relationships }, null, 2)}
-            </pre>
-          </details>
+          <div style={{
+            marginTop: '1rem',
+            padding: '1rem',
+            background: '#fef3c7',
+            borderRadius: '8px',
+            textAlign: 'left'
+          }}>
+            <strong style={{ color: '#92400e' }}>💡 Tips for better relationship detection:</strong>
+            <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem', color: '#78350f' }}>
+              <li>Ensure primary key columns have unique values</li>
+              <li>Use consistent naming (e.g., 'customer_id' in both tables)</li>
+              <li>Foreign key values should exist in the referenced table</li>
+            </ul>
+          </div>
         </div>
       )}
 
       <div className="relationship-notice">
         <h6>ℹ️ How Relationship Detection Works</h6>
         <ul>
-          <li>Primary keys are identified by uniqueness and naming patterns</li>
-          <li>Foreign keys are detected by value overlap with primary keys</li>
-          <li>Synthetic data preserves these relationships automatically</li>
-          <li>High confidence (>90%) relationships are most reliable</li>
+          <li><strong>Primary Keys:</strong> Identified by uniqueness (&gt;95%) and naming patterns (*_id, id)</li>
+          <li><strong>Foreign Keys:</strong> Detected by value overlap with primary keys (&gt;70%)</li>
+          <li><strong>Synthetic Data:</strong> Preserves all detected relationships automatically</li>
+          <li><strong>Confidence Scores:</strong> High (&gt;90%) relationships are most reliable</li>
         </ul>
       </div>
     </div>
