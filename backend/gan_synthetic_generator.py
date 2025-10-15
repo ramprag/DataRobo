@@ -2,8 +2,9 @@
 """
 GAN-Based Synthetic Data Generator using CTGAN
 - Always attempt GAN when selected and available.
-- Hard per-table timeout with automatic fallback to statistical if CTGAN runs too long.
-- Light adaptiveness for speed, while honoring user choice to use GAN.
+- Adaptive training time budget and epochs to avoid timeouts.
+- Ensures even batch size (CTGAN requirement).
+- Falls back to statistical method if CTGAN times out or fails.
 """
 
 import pandas as pd
@@ -22,13 +23,13 @@ class GANSyntheticDataGenerator:
     """
 
     def __init__(self, use_ctgan: bool = True, epochs: int = 300, batch_size: int = 256,
-                 max_train_seconds: int = 120):
+                 max_train_seconds: int = 240):
         """
         Args:
             use_ctgan: If True, try CTGAN; else use statistical.
             epochs: Upper bound on epochs (adaptive logic may lower this).
             batch_size: Upper bound on batch size (adaptive logic may lower this).
-            max_train_seconds: Hard time budget per table for CTGAN training; if exceeded -> fallback.
+            max_train_seconds: Base time budget per table for CTGAN training; will be scaled adaptively.
         """
         self.use_ctgan = use_ctgan
         self.epochs = epochs
@@ -87,28 +88,75 @@ class GANSyntheticDataGenerator:
 
         return result_df[df.columns]
 
-    def _adaptive_epochs(self, df: pd.DataFrame) -> int:
+    def _adaptive_epochs(self, df: pd.DataFrame, target_rows: Optional[int] = None) -> int:
         rows, cols = len(df), len(df.columns)
+
+        # Base epochs by dataset size
         if rows <= 1000:
-            base = 30
+            base = 40
         elif rows <= 5000:
-            base = 50
+            base = 60
         else:
             base = 80
+
+        # Add small bump for wider tables
         base += min(20, max(0, (cols - 10)))
+
+        # If target rows are very large, reduce epochs to avoid long training
+        if target_rows and target_rows > rows:
+            ratio = target_rows / max(1, rows)
+            if ratio >= 10:
+                base = max(30, int(base * 0.5))
+            elif ratio >= 5:
+                base = max(35, int(base * 0.65))
+            elif ratio >= 2:
+                base = max(40, int(base * 0.8))
+
+        # Respect user-configured max in constructor
         return int(min(self.epochs, base))
 
     def _adaptive_batch_size(self, df: pd.DataFrame) -> int:
         rows = len(df)
-        return int(min(self.batch_size, max(64, min(512, rows // 4 if rows > 0 else 256))))
+        bs = int(min(self.batch_size, max(64, min(512, rows // 4 if rows > 0 else 256))))
+        # Ensure even (CTGAN requirement)
+        if bs % 2 != 0:
+            bs -= 1
+        return max(2, bs)
+
+    def _adaptive_timeout_seconds(self, df: pd.DataFrame, target_rows: Optional[int]) -> int:
+        """
+        Scale time budget based on dataset size and requested target rows.
+        """
+        base = self.max_train_seconds  # e.g. 120
+        rows, cols = len(df), len(df.columns)
+
+        # Scale by dataset size
+        if rows > 5000:
+            base += 60  # +1 min
+        if cols > 30:
+            base += 30
+
+        # Scale by requested target rows (more rows -> slightly more time allowed)
+        if target_rows and rows > 0:
+            ratio = target_rows / rows
+            if ratio >= 10:
+                base += 60
+            elif ratio >= 5:
+                base += 30
+            elif ratio >= 2:
+                base += 15
+
+        # Clamp to avoid runaway wall time
+        return int(min(420, base))  # max 7 minutes per table
 
     def _cap_training_rows(self, df_prepared: pd.DataFrame) -> pd.DataFrame:
-        max_train_rows = 2000
+        # Smaller cap improves speed considerably
+        max_train_rows = 1500
         if len(df_prepared) > max_train_rows:
             return df_prepared.sample(n=max_train_rows, random_state=42)
         return df_prepared
 
-    def _reduce_categorical_cardinality(self, df: pd.DataFrame, max_uniques: int = 100) -> pd.DataFrame:
+    def _reduce_categorical_cardinality(self, df: pd.DataFrame, max_uniques: int = 120) -> pd.DataFrame:
         df2 = df.copy()
         for col in df2.columns:
             if df2[col].dtype == 'object':
@@ -120,23 +168,30 @@ class GANSyntheticDataGenerator:
 
     def _generate_with_ctgan_timeout(self, df: pd.DataFrame, num_rows: int) -> pd.DataFrame:
         """
-        Train CTGAN with a hard timeout. If training exceeds max_train_seconds, raise to fallback.
+        Train CTGAN with an adaptive timeout. If training exceeds allowed time, fall back.
         """
         logger.info(f"🎲 CTGAN target rows={num_rows}, input rows={len(df)}, cols={len(df.columns)}")
 
         df_prepared = self._prepare_data_for_ctgan(df)
-        df_prepared = self._reduce_categorical_cardinality(df_prepared, max_uniques=100)
+        df_prepared = self._reduce_categorical_cardinality(df_prepared, max_uniques=120)
         df_train = self._cap_training_rows(df_prepared)
 
         discrete_columns = self._detect_discrete_columns(df_train)
-        epochs = self._adaptive_epochs(df_train)
+        epochs = self._adaptive_epochs(df_train, target_rows=num_rows)
         batch_size = self._adaptive_batch_size(df_train)
-        logger.info(f"   Plan: epochs={epochs}, batch_size={batch_size}, train_rows={len(df_train)}, timeout={self.max_train_seconds}s")
+        timeout_seconds = self._adaptive_timeout_seconds(df_train, target_rows=num_rows)
+
+        logger.info(f"   Plan → epochs={epochs}, batch_size={batch_size}, train_rows={len(df_train)}, timeout={timeout_seconds}s")
 
         def train_and_sample():
+            # Ensure even batch size and not larger than data
+            final_bs = min(batch_size, max(2, len(df_train)))
+            if final_bs % 2 != 0:
+                final_bs = max(2, final_bs - 1)
+
             ctgan = self.CTGAN(
                 epochs=epochs,
-                batch_size=min(batch_size, max(1, len(df_train))),
+                batch_size=final_bs,
                 verbose=False
             )
             ctgan.fit(df_train, discrete_columns=discrete_columns)
@@ -147,14 +202,15 @@ class GANSyntheticDataGenerator:
             future = executor.submit(train_and_sample)
             try:
                 start = datetime.now()
-                synthetic_df = future.result(timeout=self.max_train_seconds)
+                synthetic_df = future.result(timeout=timeout_seconds)
                 elapsed = (datetime.now() - start).total_seconds()
                 logger.info(f"   ✓ CTGAN finished in {elapsed:.1f}s")
                 return synthetic_df
             except FuturesTimeout:
                 future.cancel()
-                logger.warning(f"⏱ CTGAN training exceeded {self.max_train_seconds}s, falling back")
-                raise TimeoutError("CTGAN training timed out")
+                logger.warning(f"⏱ CTGAN training exceeded {timeout_seconds}s, falling back to statistical method")
+                # Fall back without propagating exception to avoid upstream timeouts
+                return self._generate_statistical(df, num_rows)
 
     def _prepare_data_for_ctgan(self, df: pd.DataFrame) -> pd.DataFrame:
         df_prepared = df.copy()
@@ -220,14 +276,18 @@ class GANSyntheticDataGenerator:
         if len(clean) == 0:
             return np.zeros(n)
         if pd.api.types.is_integer_dtype(s):
-            mean, std = clean.mean(), clean.std()
-            std = 1 if (pd.isna(std) or std == 0) else std
+            mean = clean.mean()
+            std = clean.std()
+            if pd.isna(std) or std == 0:
+                std = 1
             x = np.random.normal(mean, std, n)
             x = np.round(x).astype(int)
             return np.clip(x, clean.min(), clean.max())
         else:
-            mean, std = clean.mean(), clean.std()
-            std = 1.0 if (pd.isna(std) or std == 0) else std
+            mean = clean.mean()
+            std = clean.std()
+            if pd.isna(std) or std == 0:
+                std = 1.0
             x = np.random.normal(mean, std, n)
             return np.clip(x, clean.min(), clean.max())
 

@@ -310,17 +310,19 @@ class EnhancedSyntheticDataGenerator:
         self.gan_generator = GANSyntheticDataGenerator(
             use_ctgan=use_gan,
             epochs=gan_epochs,
-            batch_size=500
+            batch_size=500,
+            max_train_seconds=300  # Give CTGAN more headroom; adaptive cap still applies
         )
         self.privacy_masker = PrivacyMasker()
         self.quality_validator = QualityValidator()
         self.relationship_detector = TableRelationshipDetector()
         self.key_manager = SyntheticKeyManager()
 
-    def process_upload(self, file_data: bytes, filename: str, privacy_config) -> Dict:
+    def process_upload(self, file_data: bytes, filename: str, privacy_config, num_rows: Optional[int] = None) -> Dict:
         """Process upload - handles both single and multiple tables"""
         logger.info(f"Processing upload: {filename}")
         logger.info(f"GAN Mode: {'ENABLED' if self.use_gan else 'DISABLED'}")
+        logger.info(f"Target rows: {num_rows if num_rows else 'Same as original'}")
 
         tables = self._extract_tables(file_data, filename)
         logger.info(f"Extracted {len(tables)} table(s): {list(tables.keys())}")
@@ -328,9 +330,91 @@ class EnhancedSyntheticDataGenerator:
         if len(tables) == 1:
             table_name = list(tables.keys())[0]
             df = list(tables.values())[0]
-            return self._process_single_table(df, table_name, privacy_config)
+            return self._process_single_table(df, table_name, privacy_config, num_rows)
         else:
-            return self._process_multiple_tables(tables, privacy_config)
+            return self._process_multiple_tables(tables, privacy_config, num_rows)
+
+    def _process_single_table(self, df: pd.DataFrame, filename: str, privacy_config, num_rows: Optional[int] = None) -> Dict:
+        """Process single table using GAN"""
+        logger.info(f"Processing single table: {filename}")
+        logger.info(f"Using {'GAN (CTGAN)' if self.use_gan else 'Statistical'} method")
+        logger.info(f"Original rows: {len(df)}, Target rows: {num_rows if num_rows else len(df)}")
+
+        # Apply privacy masks
+        masked_df = self.privacy_masker.apply_privacy_masks(df, privacy_config)
+
+        # Generate synthetic data using GAN with custom row count
+        synthetic_df = self.gan_generator.generate_synthetic_data(
+            masked_df,
+            num_rows=num_rows,  # Use the custom num_rows parameter
+            preserve_columns=[]
+        )
+
+        # Validate quality
+        quality_metrics = self.quality_validator.compare_distributions(df, synthetic_df)
+
+        # Add model info to quality metrics
+        quality_metrics['generation_method'] = self.gan_generator.get_model_info()
+
+        return {
+            'status': 'completed',
+            'table_count': 1,
+            'tables': {Path(filename).stem: synthetic_df},
+            'relationships': {},
+            'quality_metrics': quality_metrics,
+            'relationship_summary': {
+                'total_relationships': 0,
+                'foreign_keys': [],
+                'primary_keys': []
+            }
+        }
+
+    def _process_multiple_tables(self, tables: Dict[str, pd.DataFrame], privacy_config, num_rows: Optional[int] = None) -> Dict:
+        """Process multiple tables with relationship detection"""
+        logger.info(f"Processing {len(tables)} tables with relationships")
+        logger.info(f"Target rows per table: {num_rows if num_rows else 'Same as original'}")
+
+        # Detect relationships
+        relationships = self._detect_relationships(tables)
+        logger.info(f"Detected {len(relationships)} relationship(s)")
+
+        # Apply privacy masks to all tables
+        masked_tables = {}
+        for table_name, df in tables.items():
+            masked_tables[table_name] = self.privacy_masker.apply_privacy_masks(df, privacy_config)
+
+        # Generate synthetic data for each table
+        synthetic_tables = {}
+        quality_metrics = {}
+
+        for table_name, masked_df in masked_tables.items():
+            logger.info(f"Generating synthetic data for {table_name}")
+
+            # Use custom num_rows for each table
+            synthetic_df = self.gan_generator.generate_synthetic_data(
+                masked_df,
+                num_rows=num_rows,  # Use the custom num_rows parameter
+                preserve_columns=[]
+            )
+
+            synthetic_tables[table_name] = synthetic_df
+
+            # Validate quality for this table
+            original_df = tables[table_name]
+            quality_metrics[table_name] = self.quality_validator.compare_distributions(original_df, synthetic_df)
+
+        # Add model info to quality metrics
+        for table_name in quality_metrics:
+            quality_metrics[table_name]['generation_method'] = self.gan_generator.get_model_info()
+
+        return {
+            'status': 'completed',
+            'table_count': len(tables),
+            'tables': synthetic_tables,
+            'relationships': relationships,
+            'quality_metrics': quality_metrics,
+            'relationship_summary': self._create_relationship_summary(relationships, tables)
+        }
 
     def _extract_tables(self, file_data: bytes, filename: str) -> Dict[str, pd.DataFrame]:
         """Extract tables from uploaded file(s)"""
@@ -439,181 +523,3 @@ class EnhancedSyntheticDataGenerator:
         logger.info(f"Relationship summary: {summary['total_relationships']} relationships found")
         return summary
 
-    def _process_single_table(self, df: pd.DataFrame, filename: str, privacy_config) -> Dict:
-        """Process single table using GAN"""
-        logger.info(f"Processing single table: {filename}")
-        logger.info(f"Using {'GAN (CTGAN)' if self.use_gan else 'Statistical'} method")
-
-        # Apply privacy masks
-        masked_df = self.privacy_masker.apply_privacy_masks(df, privacy_config)
-
-        # Generate synthetic data using GAN
-        synthetic_df = self.gan_generator.generate_synthetic_data(
-            masked_df,
-            num_rows=len(masked_df),
-            preserve_columns=[]
-        )
-
-        # Validate quality
-        quality_metrics = self.quality_validator.compare_distributions(df, synthetic_df)
-
-        # Add model info to quality metrics
-        quality_metrics['generation_method'] = self.gan_generator.get_model_info()
-
-        return {
-            'status': 'completed',
-            'table_count': 1,
-            'tables': {Path(filename).stem: synthetic_df},
-            'relationships': {},
-            'quality_metrics': quality_metrics,
-            'relationship_summary': {
-                'total_relationships': 0,
-                'tables_with_primary_keys': 0,
-                'tables_with_foreign_keys': 0,
-                'generation_order': [Path(filename).stem],
-                'relationship_details': []
-            }
-        }
-
-    def _process_multiple_tables(self, tables: Dict[str, pd.DataFrame], privacy_config) -> Dict:
-        """Process multiple related tables with GAN"""
-        logger.info("=" * 80)
-        logger.info("Starting multi-table processing with GAN and relationship detection")
-        logger.info("=" * 80)
-
-        # Analyze relationships
-        relationship_info = self.relationship_detector.analyze_tables(tables)
-
-        logger.info(f"\nRelationship Analysis Complete:")
-        logger.info(f"  - Tables: {len(tables)}")
-        logger.info(f"  - Relationships found: {len(relationship_info['relationships'])}")
-        logger.info(f"  - Primary keys: {relationship_info['primary_keys']}")
-        logger.info(f"  - Foreign keys: {relationship_info['foreign_keys']}")
-
-        synthetic_tables = {}
-        key_mappings = {}
-
-        # Generate tables in dependency order
-        for table_name in relationship_info['generation_order']:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Generating synthetic data for: {table_name}")
-            logger.info(f"{'='*60}")
-
-            original_df = tables[table_name]
-            masked_df = self.privacy_masker.apply_privacy_masks(original_df, privacy_config)
-
-            synthetic_df, mapping_info = self._generate_table_with_relationships_gan(
-                table_name, masked_df, relationship_info, key_mappings
-            )
-
-            synthetic_tables[table_name] = synthetic_df
-            if mapping_info:
-                key_mappings.update(mapping_info)
-                logger.info(f"  ✓ Created {len(mapping_info)} key mapping(s)")
-
-        # Calculate quality metrics
-        original_dfs = list(tables.values())
-        synthetic_dfs = list(synthetic_tables.values())
-
-        quality_metrics = self.quality_validator.compare_distributions(
-            original_dfs[0], synthetic_dfs[0]
-        ) if len(original_dfs) > 0 else {'overall_quality_score': 50.0}
-
-        quality_metrics['generation_method'] = self.gan_generator.get_model_info()
-
-        summary = self._summarize_relationships(relationship_info)
-
-        logger.info("\n" + "="*80)
-        logger.info("Multi-table processing completed successfully")
-        logger.info(f"Summary: {summary['total_relationships']} relationships preserved")
-        logger.info("="*80 + "\n")
-
-        return {
-            'status': 'completed',
-            'table_count': len(tables),
-            'tables': synthetic_tables,
-            'relationships': relationship_info['relationships'],
-            'quality_metrics': quality_metrics,
-            'relationship_summary': summary
-        }
-
-    def _generate_table_with_relationships_gan(self, table_name: str, df: pd.DataFrame,
-                                              relationship_info: Dict, key_mappings: Dict) -> Tuple[pd.DataFrame, Dict]:
-        """Generate synthetic table using GAN while preserving relationships"""
-        synthetic_df = df.copy()
-        new_mappings = {}
-
-        # Step 1: Handle primary key
-        pk_column = relationship_info['primary_keys'].get(table_name)
-        if pk_column and pk_column in df.columns:
-            logger.info(f"  - Processing PRIMARY KEY: {pk_column}")
-            mapping_result = self.key_manager.create_mapping(table_name, df[pk_column])
-            synthetic_df[pk_column] = self.key_manager.apply_mapping(
-                df[pk_column], mapping_result['mapping_id']
-            )
-            new_mappings[f"{table_name}_{pk_column}"] = mapping_result['mapping_id']
-            logger.info(f"    ✓ Transformed {len(df)} primary key values")
-
-        # Step 2: Handle foreign keys
-        fks = relationship_info['foreign_keys'].get(table_name, [])
-        for fk in fks:
-            fk_column = fk['column']
-            parent_table = fk['references_table']
-            parent_pk = fk['references_column']
-
-            logger.info(f"  - Processing FOREIGN KEY: {fk_column} -> {parent_table}.{parent_pk}")
-
-            parent_mapping_key = f"{parent_table}_{parent_pk}"
-            if parent_mapping_key in key_mappings:
-                synthetic_df[fk_column] = self.key_manager.apply_mapping(
-                    df[fk_column], key_mappings[parent_mapping_key]
-                )
-                logger.info(f"    ✓ Applied mapping (confidence: {fk['confidence']:.2%})")
-            else:
-                logger.warning(f"    ✗ Parent mapping not found for {parent_mapping_key}")
-
-        # Step 3: Generate other columns using GAN
-        preserve_columns = []
-        if pk_column:
-            preserve_columns.append(pk_column)
-        preserve_columns.extend([fk['column'] for fk in fks])
-
-        logger.info(f"  - Generating {len(df.columns) - len(preserve_columns)} non-key columns using {'GAN' if self.use_gan else 'Statistical'}")
-
-        # Use GAN to generate non-key columns
-        generate_columns = [col for col in df.columns if col not in preserve_columns]
-
-        if generate_columns:
-            # Generate only non-key columns with GAN
-            generated_df = self.gan_generator.generate_synthetic_data(
-                df[generate_columns],
-                num_rows=len(df),
-                preserve_columns=[]
-            )
-
-            # Merge with preserved columns
-            for col in generate_columns:
-                synthetic_df[col] = generated_df[col]
-
-        logger.info(f"  ✓ Table generation complete: {len(synthetic_df)} rows")
-        return synthetic_df, new_mappings
-
-    def _summarize_relationships(self, relationship_info: Dict) -> Dict:
-        """Create human-readable relationship summary"""
-        summary = {
-            'total_relationships': len(relationship_info['relationships']),
-            'tables_with_primary_keys': len([k for k, v in relationship_info['primary_keys'].items() if v]),
-            'tables_with_foreign_keys': len(relationship_info['foreign_keys']),
-            'generation_order': relationship_info['generation_order'],
-            'relationship_details': []
-        }
-
-        for rel_key, rel_info in relationship_info['relationships'].items():
-            summary['relationship_details'].append({
-                'description': f"{rel_info['child_table']}.{rel_info['child_column']} → {rel_info['parent_table']}.{rel_info['parent_column']}",
-                'confidence': round(rel_info['confidence'], 2),
-                'from_table': rel_info['child_table'],
-                'to_table': rel_info['parent_table']
-            })
-
-        return summary

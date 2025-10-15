@@ -340,6 +340,23 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
             </div>
 
             <div className="form-group" style={{ marginTop: '1.5rem' }}>
+              <label htmlFor="num-rows">📊 Number of Synthetic Rows</label>
+              <input
+                id="num-rows"
+                type="number"
+                value={numRows}
+                onChange={(e) => setNumRows(e.target.value)}
+                placeholder={`Default: ${dataset?.row_count?.toLocaleString() || 'Same as original'}`}
+                min="1"
+                max="1000000"
+                className="form-control"
+              />
+              <small className="form-help">
+                Leave empty to generate the same number of rows as the original dataset ({dataset?.row_count?.toLocaleString() || 'unknown'} rows)
+              </small>
+            </div>
+
+            <div className="form-group" style={{ marginTop: '1.5rem' }}>
               <label>📝 Custom Fields to Mask</label>
               <div className="custom-fields">
                 <div className="custom-field-input">
@@ -394,23 +411,6 @@ const PrivacyConfig = ({ dataset = {}, onSubmit, loading }) => {
               </div>
               <small className="form-help">
                 Add specific column names that should be masked but weren't auto-detected
-              </small>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="num-rows">📊 Number of Synthetic Rows</label>
-              <input
-                id="num-rows"
-                type="number"
-                value={numRows}
-                onChange={(e) => setNumRows(e.target.value)}
-                placeholder={`Default: ${dataset?.row_count?.toLocaleString() || 'Same as original'}`}
-                min="1"
-                max="1000000"
-                className="form-control"
-              />
-              <small className="form-help">
-                Leave empty to generate the same number of rows as the original dataset ({dataset?.row_count?.toLocaleString() || 'unknown'} rows)
               </small>
             </div>
           </div>
