@@ -298,20 +298,20 @@ class SyntheticKeyManager:
 class EnhancedSyntheticDataGenerator:
     """Multi-table synthetic data generator with GAN support"""
 
-    def __init__(self, use_gan: bool = True, gan_epochs: int = 300):
+    def __init__(self, use_gan: bool = True, gan_epochs: int = 100):
         """
         Initialize generator with GAN support
 
         Args:
             use_gan: Whether to use GAN (CTGAN) for generation
-            gan_epochs: Number of epochs for GAN training
+            gan_epochs: Number of epochs for GAN training (default: 100, optimized from 300)
         """
         self.use_gan = use_gan
         self.gan_generator = GANSyntheticDataGenerator(
             use_ctgan=use_gan,
             epochs=gan_epochs,
-            batch_size=500,
-            max_train_seconds=300  # Give CTGAN more headroom; adaptive cap still applies
+            batch_size=128,  # Reduced from 500 for faster training
+            max_train_seconds=120  # Reduced from 300 for faster training
         )
         self.privacy_masker = PrivacyMasker()
         self.quality_validator = QualityValidator()

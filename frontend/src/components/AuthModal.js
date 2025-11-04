@@ -1,5 +1,5 @@
 // frontend/src/components/AuthModal.js
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import '../styles/Auth.css';
 
 const AuthModal = ({ show, mode, onClose, onSuccess }) => {
@@ -8,6 +8,24 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Sync internal state with prop changes
+  useEffect(() => {
+    setIsLogin(mode === 'login');
+    setError('');
+    setSuccess('');
+    setFormData({ username: '', email: '', password: '' });
+  }, [mode]);
+
+  // Reset form when modal closes
+  useEffect(() => {
+    if (!show) {
+      setError('');
+      setSuccess('');
+      setFormData({ username: '', email: '', password: '' });
+      setLoading(false);
+    }
+  }, [show]);
 
   if (!show) return null;
 
@@ -36,7 +54,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
         setSuccess('Login successful! Redirecting...');
         setTimeout(() => {
           onSuccess(user);
-        }, 1000);
+        }, 800);
       } else {
         if (users.some((u) => u.email === formData.email)) {
           setError('Email already registered');
@@ -70,7 +88,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
         setSuccess('Account created successfully! Redirecting...');
         setTimeout(() => {
           onSuccess(newUser);
-        }, 1000);
+        }, 800);
       }
     } catch (err) {
       console.error('Auth error:', err);
@@ -89,7 +107,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
   return (
     <div className="auth-modal-overlay" onClick={onClose}>
       <div className="auth-modal-content" onClick={(e) => e.stopPropagation()}>
-        <button className="auth-modal-close" onClick={onClose}>
+        <button className="auth-modal-close" onClick={onClose} aria-label="Close">
           ×
         </button>
 
@@ -115,7 +133,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
           </div>
         )}
 
-        <div className="auth-form">
+        <form onSubmit={handleSubmit} className="auth-form">
           {!isLogin && (
             <div className="auth-form-group">
               <label className="auth-label">Username</label>
@@ -126,6 +144,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
                 onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                 placeholder="johndoe"
                 disabled={loading}
+                required={!isLogin}
               />
             </div>
           )}
@@ -139,6 +158,7 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               placeholder="you@company.com"
               disabled={loading}
+              required
             />
           </div>
 
@@ -151,11 +171,12 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               placeholder="••••••••"
               disabled={loading}
+              required
             />
           </div>
 
           <button
-            onClick={handleSubmit}
+            type="submit"
             className="auth-submit-btn"
             disabled={loading}
           >
@@ -165,10 +186,10 @@ const AuthModal = ({ show, mode, onClose, onSuccess }) => {
               <span>{isLogin ? 'Sign In' : 'Create Account'}</span>
             )}
           </button>
-        </div>
+        </form>
 
         <div className="auth-toggle">
-          <button onClick={toggleMode} className="auth-toggle-btn" disabled={loading}>
+          <button type="button" onClick={toggleMode} className="auth-toggle-btn" disabled={loading}>
             {isLogin
               ? "Don't have an account? Sign up"
               : 'Already have an account? Sign in'}

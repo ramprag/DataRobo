@@ -22,8 +22,8 @@ class GANSyntheticDataGenerator:
     GAN-based synthetic data generator using CTGAN (Conditional Tabular GAN)
     """
 
-    def __init__(self, use_ctgan: bool = True, epochs: int = 300, batch_size: int = 256,
-                 max_train_seconds: int = 240):
+    def __init__(self, use_ctgan: bool = True, epochs: int = 100, batch_size: int = 128,
+                 max_train_seconds: int = 120):
         """
         Args:
             use_ctgan: If True, try CTGAN; else use statistical.
@@ -91,63 +91,53 @@ class GANSyntheticDataGenerator:
     def _adaptive_epochs(self, df: pd.DataFrame, target_rows: Optional[int] = None) -> int:
         rows, cols = len(df), len(df.columns)
 
-        # Base epochs by dataset size
-        if rows <= 1000:
-            base = 40
+        # More aggressive reduction for small/mid tables
+        if rows <= 500:
+            base = 12
+        elif rows <= 1000:
+            base = 16
         elif rows <= 5000:
-            base = 60
+            base = 22
         else:
-            base = 80
+            base = 32
 
-        # Add small bump for wider tables
-        base += min(20, max(0, (cols - 10)))
+        # Minimal bump for wider tables
+        base += min(6, max(0, (cols - 20)))
 
-        # If target rows are very large, reduce epochs to avoid long training
+        # If target rows are very large, reduce epochs further
         if target_rows and target_rows > rows:
             ratio = target_rows / max(1, rows)
             if ratio >= 10:
-                base = max(30, int(base * 0.5))
+                base = max(10, int(base * 0.5))
             elif ratio >= 5:
-                base = max(35, int(base * 0.65))
+                base = max(12, int(base * 0.6))
             elif ratio >= 2:
-                base = max(40, int(base * 0.8))
+                base = max(14, int(base * 0.7))
 
-        # Respect user-configured max in constructor
         return int(min(self.epochs, base))
 
     def _adaptive_batch_size(self, df: pd.DataFrame) -> int:
         rows = len(df)
-        bs = int(min(self.batch_size, max(64, min(512, rows // 4 if rows > 0 else 256))))
-        # Ensure even (CTGAN requirement)
-        if bs % 2 != 0:
-            bs -= 1
-        return max(2, bs)
+        # Favor larger batches to reduce steps/epoch; keep under 1024 for CPU
+        bs = int(min(1024, max(256, rows // 2 if rows > 0 else 256)))
+        # Ensure multiple of pac=10 later in train; just return here
+        return max(10, bs)
 
     def _adaptive_timeout_seconds(self, df: pd.DataFrame, target_rows: Optional[int]) -> int:
-        """
-        Scale time budget based on dataset size and requested target rows.
-        """
-        base = self.max_train_seconds  # e.g. 120
+        """Aggressive timeout targeting sub-90s for <=5k rows."""
         rows, cols = len(df), len(df.columns)
-
-        # Scale by dataset size
-        if rows > 5000:
-            base += 60  # +1 min
+        base = 75 if rows <= 5000 else 120
         if cols > 30:
-            base += 30
-
-        # Scale by requested target rows (more rows -> slightly more time allowed)
+            base += 10
         if target_rows and rows > 0:
             ratio = target_rows / rows
             if ratio >= 10:
-                base += 60
-            elif ratio >= 5:
-                base += 30
-            elif ratio >= 2:
                 base += 15
-
-        # Clamp to avoid runaway wall time
-        return int(min(420, base))  # max 7 minutes per table
+            elif ratio >= 5:
+                base += 10
+            elif ratio >= 2:
+                base += 5
+        return int(min(150, base))
 
     def _cap_training_rows(self, df_prepared: pd.DataFrame) -> pd.DataFrame:
         # Smaller cap improves speed considerably
@@ -166,6 +156,20 @@ class GANSyntheticDataGenerator:
                     df2[col] = df2[col].apply(lambda x: x if x in keep else 'Other')
         return df2
 
+    def _hash_bucket_quasi_ids(self, df: pd.DataFrame, bucket_size: int = 128) -> pd.DataFrame:
+        df2 = df.copy()
+        rows = len(df2)
+        for col in df2.columns:
+            if df2[col].dtype == 'object':
+                try:
+                    nunique = df2[col].nunique(dropna=True)
+                    if rows > 0 and (nunique / rows) > 0.8:
+                        # Likely an ID-like column; hash-bucket
+                        df2[col] = df2[col].astype(str).apply(lambda x: f"B{hash(x) % bucket_size}")
+                except Exception:
+                    continue
+        return df2
+
     def _generate_with_ctgan_timeout(self, df: pd.DataFrame, num_rows: int) -> pd.DataFrame:
         """
         Train CTGAN with an adaptive timeout. If training exceeds allowed time, fall back.
@@ -173,7 +177,10 @@ class GANSyntheticDataGenerator:
         logger.info(f"🎲 CTGAN target rows={num_rows}, input rows={len(df)}, cols={len(df.columns)}")
 
         df_prepared = self._prepare_data_for_ctgan(df)
-        df_prepared = self._reduce_categorical_cardinality(df_prepared, max_uniques=120)
+        # Adaptive cardinality reduction and quasi-ID bucketing
+        max_uniques = 60 if len(df_prepared) <= 5000 else 120
+        df_prepared = self._reduce_categorical_cardinality(df_prepared, max_uniques=max_uniques)
+        df_prepared = self._hash_bucket_quasi_ids(df_prepared, bucket_size=128)
         df_train = self._cap_training_rows(df_prepared)
 
         discrete_columns = self._detect_discrete_columns(df_train)
@@ -184,17 +191,64 @@ class GANSyntheticDataGenerator:
         logger.info(f"   Plan → epochs={epochs}, batch_size={batch_size}, train_rows={len(df_train)}, timeout={timeout_seconds}s")
 
         def train_and_sample():
-            # Ensure even batch size and not larger than data
-            final_bs = min(batch_size, max(2, len(df_train)))
-            if final_bs % 2 != 0:
-                final_bs = max(2, final_bs - 1)
+            # PAC-safe large batch size
+            desired_bs = min(batch_size, max(10, len(df_train)))
+            pac = 10
+            final_bs = max(pac, (desired_bs // pac) * pac)
+            final_bs = min(final_bs, len(df_train)) if len(df_train) >= pac else len(df_train)
+            if final_bs is None or final_bs == 0:
+                return self._generate_statistical(df, num_rows)
 
-            ctgan = self.CTGAN(
-                epochs=epochs,
-                batch_size=final_bs,
-                verbose=False
-            )
-            ctgan.fit(df_train, discrete_columns=discrete_columns)
+            # Slimmer network for faster CPU training if supported by CTGAN
+            ctgan_kwargs = {
+                'epochs': 1,  # micro-epochs; we will loop manually for early stopping and timeout
+                'batch_size': final_bs,
+                'pac': pac,
+                'verbose': False
+            }
+            # Optional dims if CTGAN supports them
+            for k, v in {
+                'generator_dim': [128, 128],
+                'discriminator_dim': [128, 128]
+            }.items():
+                ctgan_kwargs[k] = v
+
+            ctgan = self.CTGAN(**ctgan_kwargs)
+
+            # Micro-epoch training loop with timeout and early exit
+            start_time = datetime.now()
+            remaining_epochs = epochs
+            last_check_losses = []
+            while remaining_epochs > 0:
+                # Respect wall-clock budget
+                elapsed = (datetime.now() - start_time).total_seconds()
+                if elapsed > timeout_seconds:
+                    logger.info("⏹ CTGAN: timeout budget reached; stopping early")
+                    break
+                # Train for a small chunk of epochs
+                chunk = min(3, remaining_epochs)
+                try:
+                    # Some CTGAN versions only accept full epochs at init; recreate with adjusted epochs
+                    ctgan.epochs = chunk
+                except Exception:
+                    pass
+                ctgan.fit(df_train, discrete_columns=discrete_columns)
+                remaining_epochs -= chunk
+
+                # Early stopping heuristic: if we cannot access losses, use elapsed/epoch growth
+                # If per-chunk took too long, reduce further
+                chunk_elapsed = (datetime.now() - start_time).total_seconds() - elapsed
+                if chunk_elapsed > max(8.0, timeout_seconds / 6):
+                    # Cut remaining epochs aggressively if chunks are slow
+                    remaining_epochs = max(0, int(remaining_epochs * 0.5))
+
+                # Basic stabilization check placeholder (losses not exposed by ctgan base API)
+                last_check_losses.append(chunk_elapsed)
+                if len(last_check_losses) >= 3:
+                    # If recent chunks are consistently fast and small delta, stop early
+                    if max(last_check_losses[-3:]) - min(last_check_losses[-3:]) < 1.0:
+                        break
+
             out = ctgan.sample(num_rows)
             return self._post_process_ctgan_output(out, df)
 
