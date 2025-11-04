@@ -22,7 +22,7 @@ from synthetic_generator import SyntheticDataGenerator
 from quality_validator import QualityValidator
 from data_processor import DataProcessor
 from multi_table_processor import EnhancedSyntheticDataGenerator
-
+from advanced_multimodal import AdvancedMultimodalGenerator
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -114,6 +114,37 @@ class PipelineRunResponse(BaseModel):
     quality_report: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
     artifact_path: Optional[str] = None
+
+class TextSpec(BaseModel):
+    enabled: bool = True
+    count: int = 1000
+    domain: str = "generic"
+
+class ImageSpec(BaseModel):
+    enabled: bool = True
+    count: int = 50
+    width: int = 256
+    height: int = 256
+    domain: str = "automotive"
+    prompts: Optional[List[str]] = None
+    num_inference_steps: int = 15
+    guidance_scale: float = 6.0
+
+class MultimodalSpec(BaseModel):
+    text: Optional[TextSpec] = TextSpec()
+    image: Optional[ImageSpec] = ImageSpec()
+
+class MultimodalRequest(BaseModel):
+    name: Optional[str] = "multimodal_job"
+    spec: MultimodalSpec = MultimodalSpec()
+
+class MultimodalResponse(BaseModel):
+    id: str
+    name: str
+    status: str
+    created_at: str
+    output: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
 
 @app.get("/")
 async def root():
@@ -250,6 +281,51 @@ async def get_dataset(dataset_id: str):
 @app.get("/api/datasets", response_model=List[DatasetResponse])
 async def list_datasets():
     return [DatasetResponse(**d) for d in datasets_db.values()]
+
+multimodal_jobs: Dict[str, Dict[str, Any]] = {}
+
+async def generate_multimodal_background(job_id: str, request: MultimodalRequest):
+    try:
+        multimodal_jobs[job_id]["status"] = "processing"
+        multimodal_jobs[job_id]["message"] = "Starting multimodal generation"
+
+        # Choose advanced ONNX diffusion for images
+        adv = AdvancedMultimodalGenerator(output_root="synthetic")
+        job_dir = os.path.join("synthetic", f"mm_{job_id}")
+        os.makedirs(job_dir, exist_ok=True)
+
+        multimodal_jobs[job_id]["message"] = "Generating"
+        result = await asyncio.to_thread(adv.generate, job_dir, request.spec.dict())
+        multimodal_jobs[job_id]["status"] = "completed"
+        multimodal_jobs[job_id]["output"] = result
+        multimodal_jobs[job_id]["message"] = "Completed successfully"
+    except Exception as e:
+        multimodal_jobs[job_id]["status"] = "failed"
+        multimodal_jobs[job_id]["message"] = str(e)
+
+@app.post("/api/multimodal/generate", response_model=MultimodalResponse)
+async def multimodal_generate(request: MultimodalRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    multimodal_jobs[job_id] = {
+        "id": job_id,
+        "name": request.name or f"multimodal_{job_id[:8]}",
+        "status": "queued",
+        "created_at": datetime.utcnow().isoformat(),
+        "output": None,
+        "message": "Queued"
+    }
+    background_tasks.add_task(generate_multimodal_background, job_id, request)
+    return MultimodalResponse(**multimodal_jobs[job_id])
+
+@app.get("/api/multimodal/jobs", response_model=List[MultimodalResponse])
+async def multimodal_list():
+    return [MultimodalResponse(**v) for v in multimodal_jobs.values()]
+
+@app.get("/api/multimodal/jobs/{job_id}", response_model=MultimodalResponse)
+async def multimodal_get(job_id: str):
+    if job_id not in multimodal_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return MultimodalResponse(**multimodal_jobs[job_id])
 
 async def generate_synthetic_data_background_enhanced(dataset_id: str, privacy_config: PrivacyConfig, num_rows: Optional[int] = None):
     try:

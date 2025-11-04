@@ -2,7 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
-
+import LandingPage from './components/LandingPage';
+import AuthModal from './components/AuthModal';
 // Components
 import FileUpload from './components/FileUpload';
 import DatasetList from './components/DatasetList';
@@ -14,6 +15,7 @@ import DataPreview from './components/DataPreview';
 import RelationshipViewer from './components/RelationshipViewer';
 import ImportExportModal from './components/ImportExportModal';
 import AIFabricate from './components/AIFabricate';
+import MultimodalStudio from './components/MultimodalStudio';
 
 // API Configuration
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
@@ -35,6 +37,11 @@ api.interceptors.response.use(
 );
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+
   const [datasets, setDatasets] = useState([]);
   const [selectedDataset, setSelectedDataset] = useState(null);
   const [currentStep, setCurrentStep] = useState('upload');
@@ -46,7 +53,7 @@ function App() {
   // New states for Import/Export and AI Fabricate
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [generationMode, setGenerationMode] = useState('schema'); // 'schema' or 'ai'
+  const [generationMode, setGenerationMode] = useState('schema'); // 'schema' or 'ai' or 'multimodal'
 
   // CI/CD states
   const [showCICDModal, setShowCICDModal] = useState(false);
@@ -55,14 +62,30 @@ function App() {
   const [selectedPipeline, setSelectedPipeline] = useState(null);
 
   useEffect(() => {
-    fetchDatasets();
+        const auth = localStorage.getItem('gstan_auth');
+        if (auth) {
+          try {
+            const userData = JSON.parse(auth);
+            setCurrentUser(userData);
+            setIsAuthenticated(true);
+          } catch (err) {
+            console.error('Invalid auth data:', err);
+            localStorage.removeItem('gstan_auth');
+          }
+        }
+      }, []);
+      useEffect(() => {
+        if (isAuthenticated) {
+        fetchDatasets();
+          fetchDatasets();
+        }
 
     return () => {
       if (pollIntervalRef) {
         clearInterval(pollIntervalRef);
       }
     };
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     return () => {
@@ -75,12 +98,35 @@ function App() {
 
   // Add useEffect to fetch CI/CD data when modal opens
   useEffect(() => {
-    if (showCICDModal) {
+    if (showCICDModal && isAuthenticated) {
       fetchPipelines();
       fetchPipelineRuns();
     }
-  }, [showCICDModal]);
-
+  }, [showCICDModal, isAuthenticated]);
+  // NEW AUTHENTICATION HANDLERS
+  const handleGetStarted = (mode) => {
+    setAuthMode(mode);
+    setShowAuthModal(true);
+  };
+  const handleAuthSuccess = (user) => {
+    setCurrentUser(user);
+    setIsAuthenticated(true);
+    setShowAuthModal(false);
+    setSuccess(`Welcome${user.username ? ', ' + user.username : ''}!`);
+  };
+  const handleLogout = () => {
+    localStorage.removeItem('gstan_auth');
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setDatasets([]);
+    setSelectedDataset(null);
+    setCurrentStep('upload');
+    if (pollIntervalRef) {
+      clearInterval(pollIntervalRef);
+      setPollIntervalRef(null);
+    }
+  };
+  // EXISTING HANDLERS (unchanged)
   const fetchDatasets = async () => {
     try {
       setLoading(true);
@@ -248,7 +294,7 @@ function App() {
       console.log('Sending generation request:', requestData);
 
       const response = await api.post(`/api/datasets/${selectedDataset.id}/generate-synthetic`, requestData, {
-        timeout: 60000 // Just to start the process
+        timeout: 50000 // Just to start the process
       });
 
       console.log('Generation request successful:', response.data);
@@ -573,6 +619,19 @@ function App() {
     console.log('AI Fabricate request:', prompt, config);
     alert('AI Fabricate feature coming soon! Our team is integrating advanced LLM capabilities.');
   };
+  if (!isAuthenticated) {
+    return (
+      <>
+        <LandingPage onGetStarted={handleGetStarted} />
+        <AuthModal
+          show={showAuthModal}
+          mode={authMode}
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={handleAuthSuccess}
+        />
+      </>
+    );
+  }
 
   return (
     <div className="App">
@@ -583,7 +642,12 @@ function App() {
               <h1>🔒 GSTAN - Synthetic Data Generator</h1>
               <p>Privacy-safe synthetic data generation with GAN support</p>
             </div>
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                                                                      {currentUser && (
+                                                                                        <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9rem' }}>
+                                                                                          👤 {currentUser.username || currentUser.email}
+                                                                                        </span>
+                                                                                      )}
               <button
                 onClick={() => setShowImportModal(true)}
                 className="btn"
@@ -621,6 +685,18 @@ function App() {
               >
                 🔄 CI/CD Pipeline
               </button>
+              <button
+                onClick={handleLogout}
+                className="btn"
+                style={{
+                  background: 'rgba(239, 68, 68, 0.2)',
+                  color: 'white',
+                  border: '2px solid rgba(239, 68, 68, 0.5)',
+                  fontWeight: '600'
+                }}
+              >
+                🚪 Logout
+              </button>
             </div>
           </div>
         </div>
@@ -655,72 +731,92 @@ function App() {
             </aside>
 
             <div className="main-content">
-
               {currentStep === 'upload' && (
                 <div className="step-content">
                   <h2>Welcome to GSTAN</h2>
                   <p>Choose your data generation method</p>
 
-{/* Generation Mode Selector - Now at the top */}
-<div className="mode-switch">
-  <button
-    type="button"
-    onClick={() => setGenerationMode('schema')}
-    className={`mode-card ${generationMode === 'schema' ? 'active' : ''}`}
-    aria-pressed={generationMode === 'schema'}
-  >
-    <div className="icon">📊</div>
-    <div className="content">
-      <div className="title">Schema-Based Generation</div>
-      <div className="subtitle">Upload your dataset (CSV/Excel or multi-table ZIP)</div>
-      <div className="meta">
-        <span>Relationship detection</span>
-        <span>•</span>
-        <span>Privacy masking</span>
-        <span>•</span>
-        <span>GAN optional</span>
-      </div>
-    </div>
-  </button>
+                  <div className="mode-switch">
+                    <button
+                      type="button"
+                      onClick={() => setGenerationMode('schema')}
+                      className={`mode-card${generationMode === 'schema' ? ' active' : ''}`}
+                      aria-pressed={generationMode === 'schema'}
+                    >
+                      <div className="icon">📊</div>
+                      <div className="content">
+                        <div className="title">Schema-Based Generation</div>
+                        <div className="subtitle">Upload your dataset (CSV/Excel or multi-table ZIP)</div>
+                        <div className="meta">
+                          <span>Relationship detection</span>
+                          <span>•</span>
+                          <span>Privacy masking</span>
+                          <span>•</span>
+                          <span>GAN optional</span>
+                        </div>
+                      </div>
+                    </button>
 
-  <button
-    type="button"
-    onClick={() => setGenerationMode('ai')}
-    className={`mode-card ${generationMode === 'ai' ? 'active' : ''}`}
-    aria-pressed={generationMode === 'ai'}
-  >
-    <span className="badge">BETA</span>
-    <div className="icon">✨</div>
-    <div className="content">
-      <div className="title">AI Fabricate</div>
-      <div className="subtitle">Describe your data and we'll generate it</div>
-      <div className="meta">
-        <span>Natural language</span>
-        <span>•</span>
-        <span>Enterprise-ready</span>
-        <span>•</span>
-        <span>Multi-domain</span>
-      </div>
-    </div>
-  </button>
-</div>
-                  {generationMode === 'schema' ? (
+                    <button
+                      type="button"
+                      onClick={() => setGenerationMode('ai')}
+                      className={`mode-card${generationMode === 'ai' ? ' active' : ''}`}
+                      aria-pressed={generationMode === 'ai'}
+                    >
+                      <span className="badge">BETA</span>
+                      <div className="icon">✨</div>
+                      <div className="content">
+                        <div className="title">AI Fabricate</div>
+                        <div className="subtitle">Describe your data and we'll generate it</div>
+                        <div className="meta">
+                          <span>Natural language</span>
+                          <span>•</span>
+                          <span>Enterprise-ready</span>
+                          <span>•</span>
+                          <span>Multi-domain</span>
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setGenerationMode('multimodal')}
+                      className={`mode-card${generationMode === 'multimodal' ? ' active' : ''}`}
+                      aria-pressed={generationMode === 'multimodal'}
+                    >
+                      <span className="badge">BETA</span>
+                      <div className="icon">🖼️</div>
+                      <div className="content">
+                        <div className="title">Multimodal Studio</div>
+                        <div className="subtitle">Diffusion (ONNX) images + text</div>
+                        <div className="meta">
+                          <span>Automotive</span>
+                          <span>•</span>
+                          <span>Robotics</span>
+                          <span>•</span>
+                          <span>Warehouse</span>
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+
+                  {generationMode === 'schema' && (
                     <>
                       <h3 style={{ marginBottom: '1rem', color: '#1e293b' }}>Upload Your Dataset</h3>
                       <p style={{ marginBottom: '2rem', color: '#64748b' }}>Upload a CSV file, Excel file, or ZIP archive of multiple tables</p>
-                      <FileUpload
-                        onFileUpload={handleFileUpload}
-                        loading={loading}
-                      />
+                      <FileUpload onFileUpload={handleFileUpload} loading={loading} />
                     </>
-                  ) : (
+                  )}
+                  {generationMode === 'ai' && (
                     <>
                       <h3 style={{ marginBottom: '1rem', color: '#a855f7' }}>AI-Powered Data Generation</h3>
                       <p style={{ marginBottom: '2rem', color: '#64748b' }}>Describe your dataset and let AI create it for you</p>
-                      <AIFabricate
-                        onGenerate={handleAIFabricate}
-                        loading={loading}
-                      />
+                      <AIFabricate onGenerate={handleAIFabricate} loading={loading} />
+                    </>
+                  )}
+                  {generationMode === 'multimodal' && (
+                    <>
+                      <MultimodalStudio />
                     </>
                   )}
                 </div>
@@ -731,7 +827,6 @@ function App() {
                   <h2>Configure Privacy Settings</h2>
                   <p>Choose what data to mask and select generation method</p>
 
-                  {/* Progress indicator for current step */}
                   <div className="progress-steps-inline" style={{ marginBottom: '2rem' }}>
                     <div className="step-indicator" style={{
                       display: 'flex',
@@ -786,7 +881,6 @@ function App() {
 
               {currentStep === 'generate' && selectedDataset && (
                 <div className="step-content">
-                  {/* Progress indicator for current step */}
                   <div className="progress-steps-inline" style={{ marginBottom: '2rem' }}>
                     <div className="step-indicator" style={{
                       display: 'flex',
@@ -815,7 +909,6 @@ function App() {
 
               {currentStep === 'review' && selectedDataset && (
                 <div className="step-content">
-                  {/* Progress indicator for current step */}
                   <div className="progress-steps-inline" style={{ marginBottom: '2rem' }}>
                     <div className="step-indicator" style={{
                       display: 'flex',
@@ -903,7 +996,6 @@ function App() {
                   )}
                 </div>
               )}
-
             </div>
           </div>
         </div>
@@ -931,492 +1023,492 @@ function App() {
         selectedDataset={selectedDataset}
       />
 
-      {/* CI/CD Pipeline Modal */}
-{/* Enterprise CI/CD Pipeline Modal */}
-{showCICDModal && (
-  <div className="modal-overlay enterprise-modal">
-    <div className="modal-content enterprise-cicd-modal">
-      <div className="enterprise-modal-header">
-        <div className="header-content">
-          <div className="header-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-          <div className="header-text">
-            <h2>CI/CD Pipeline Management</h2>
-            <p>Automate synthetic data generation with enterprise-grade quality gates</p>
-          </div>
-        </div>
-        <button onClick={() => setShowCICDModal(false)} className="enterprise-close-btn">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M15 5L5 15M5 5L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
-        </button>
-      </div>
-
-      <div className="enterprise-cicd-content">
-        <div className="enterprise-tabs">
-          <button
-            className={`enterprise-tab ${selectedPipeline === null ? 'active' : ''}`}
-            onClick={() => setSelectedPipeline(null)}
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M2 3H14V13H2V3Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M6 7H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M6 9H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-            <span>Pipeline Library</span>
-            <div className="tab-badge">{pipelines.length}</div>
-          </button>
-          <button
-            className={`enterprise-tab ${selectedPipeline === 'runs' ? 'active' : ''}`}
-            onClick={() => setSelectedPipeline('runs')}
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.5"/>
-            </svg>
-            <span>Execution History</span>
-            <div className="tab-badge">{pipelineRuns.length}</div>
-          </button>
-          <button
-            className={`enterprise-tab ${selectedPipeline === 'create' ? 'active' : ''}`}
-            onClick={() => setSelectedPipeline('create')}
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-            <span>Create Pipeline</span>
-          </button>
-        </div>
-
-        <div className="enterprise-content-area">
-          {selectedPipeline === null && (
-            <div className="enterprise-section">
-              <div className="section-header-enterprise">
-                <div className="header-left">
-                  <h3>Pipeline Library</h3>
-                  <p>Manage your automated data generation pipelines</p>
+      {/* Enterprise CI/CD Pipeline Modal */}
+      {showCICDModal && (
+        <div className="modal-overlay enterprise-modal">
+          <div className="modal-content enterprise-cicd-modal">
+            <div className="enterprise-modal-header">
+              <div className="header-content">
+                <div className="header-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
-                <div className="header-actions">
-                  <button
-                    className="enterprise-btn enterprise-btn-primary"
-                    onClick={() => setSelectedPipeline('create')}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                    Create New Pipeline
-                  </button>
+                <div className="header-text">
+                  <h2>CI/CD Pipeline Management</h2>
+                  <p>Automate synthetic data generation with enterprise-grade quality gates</p>
                 </div>
               </div>
-
-              <div className="enterprise-pipelines-grid">
-                {pipelines.map(pipeline => (
-                  <div key={pipeline.id} className="enterprise-pipeline-card">
-                    <div className="pipeline-card-header">
-                      <div className="pipeline-info">
-                        <h4>{pipeline.name}</h4>
-                        <p>{pipeline.description}</p>
-                      </div>
-                      <div className="pipeline-status">
-                        <span className={`enterprise-status-badge ${pipeline.active ? 'active' : 'inactive'}`}>
-                          {pipeline.active ? 'Active' : 'Inactive'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="pipeline-metrics-enterprise">
-                      <div className="metric">
-                        <div className="metric-icon">🎯</div>
-                        <div className="metric-content">
-                          <span className="metric-label">Quality Gate</span>
-                          <span className="metric-value">{pipeline.quality_gate?.min_overall_quality || 60}%</span>
-                        </div>
-                      </div>
-                      <div className="metric">
-                        <div className="metric-icon">⚡</div>
-                        <div className="metric-content">
-                          <span className="metric-label">Auto-trigger</span>
-                          <span className="metric-value">{pipeline.auto_trigger_on_upload ? 'ON' : 'OFF'}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="pipeline-actions-enterprise">
-                      <button
-                        className="enterprise-btn enterprise-btn-secondary"
-                        onClick={() => handleRunPipeline(pipeline.id, selectedDataset?.id)}
-                        disabled={!selectedDataset}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M3 2L13 8L3 14V2Z" fill="currentColor"/>
-                        </svg>
-                        Execute Pipeline
-                      </button>
-                      <button className="enterprise-btn enterprise-btn-outline">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M12 2H4C2.9 2 2 2.9 2 4V12C2 13.1 2.9 14 4 14H12C13.1 14 14 13.1 14 12V4C14 2.9 13.1 2 12 2Z" stroke="currentColor" strokeWidth="1.5"/>
-                          <path d="M6 6H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                          <path d="M6 8H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                        </svg>
-                        Configure
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {pipelines.length === 0 && (
-                  <div className="enterprise-empty-state">
-                    <div className="empty-icon">
-                      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M24 4L44 14L24 24L4 14L24 4Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M4 28L24 38L44 28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M4 18L24 28L44 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </div>
-                    <h4>No Pipelines Created</h4>
-                    <p>Create your first pipeline to automate synthetic data generation with quality gates</p>
-                    <button
-                      className="enterprise-btn enterprise-btn-primary"
-                      onClick={() => setSelectedPipeline('create')}
-                    >
-                      Create Your First Pipeline
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button onClick={() => setShowCICDModal(false)} className="enterprise-close-btn" aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M15 5L5 15M5 5L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
             </div>
-          )}
 
-          {selectedPipeline === 'create' && (
-            <div className="enterprise-section">
-              <div className="section-header-enterprise">
-                <div className="header-left">
-                  <h3>Create New Pipeline</h3>
-                  <p>Configure an enterprise-grade automated data generation pipeline</p>
-                </div>
-                <div className="header-actions">
-                  <button
-                    className="enterprise-btn enterprise-btn-secondary"
-                    onClick={() => setSelectedPipeline(null)}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                    Cancel
-                  </button>
-                </div>
+            <div className="enterprise-cicd-content">
+              <div className="enterprise-tabs">
+                <button
+                  className={`enterprise-tab${selectedPipeline === null ? ' active' : ''}`}
+                  onClick={() => setSelectedPipeline(null)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 3H14V13H2V3Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M6 7H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M6 9H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span>Pipeline Library</span>
+                  <div className="tab-badge">{pipelines.length}</div>
+                </button>
+                <button
+                  className={`enterprise-tab${selectedPipeline === 'runs' ? ' active' : ''}`}
+                  onClick={() => setSelectedPipeline('runs')}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.5" />
+                  </svg>
+                  <span>Execution History</span>
+                  <div className="tab-badge">{pipelineRuns.length}</div>
+                </button>
+                <button
+                  className={`enterprise-tab${selectedPipeline === 'create' ? ' active' : ''}`}
+                  onClick={() => setSelectedPipeline('create')}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span>Create Pipeline</span>
+                </button>
               </div>
 
-              <div className="enterprise-form-container">
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const formData = new FormData(e.target);
-                  const pipelineData = {
-                    name: formData.get('name'),
-                    description: formData.get('description'),
-                    auto_trigger_on_upload: formData.get('auto_trigger') === 'on',
-                    default_privacy: {
-                      mask_emails: formData.get('mask_emails') === 'on',
-                      mask_names: formData.get('mask_names') === 'on',
-                      mask_phone_numbers: formData.get('mask_phone_numbers') === 'on',
-                      mask_addresses: formData.get('mask_addresses') === 'on',
-                      mask_ssn: formData.get('mask_ssn') === 'on',
-                      custom_fields: [],
-                      use_gan: formData.get('use_gan') === 'on',
-                      gan_epochs: parseInt(formData.get('gan_epochs') || '100'),
-                      anonymization_method: 'faker'
-                    },
-                    quality_gate: {
-                      min_overall_quality: parseFloat(formData.get('min_quality') || '60'),
-                      allow_missing_columns: formData.get('allow_missing_columns') === 'on'
-                    },
-                    export_target: {
-                      type: formData.get('export_type') || 'local',
-                      path: formData.get('export_path') || 'artifacts'
-                    },
-                    active: true
-                  };
-                  handleCreatePipeline(pipelineData);
-                }}>
-                  <div className="form-sections">
-                    <div className="form-section">
-                      <div className="section-header">
-                        <h4>Basic Configuration</h4>
-                        <p>Define your pipeline name and behavior</p>
+              <div className="enterprise-content-area">
+                {selectedPipeline === null && (
+                  <div className="enterprise-section">
+                    <div className="section-header-enterprise">
+                      <div className="header-left">
+                        <h3>Pipeline Library</h3>
+                        <p>Manage your automated data generation pipelines</p>
                       </div>
-                      <div className="form-grid">
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">Pipeline Name</span>
-                            <span className="label-required">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            name="name"
-                            required
-                            className="enterprise-input"
-                            placeholder="e.g., Production Quality Pipeline"
-                          />
-                        </div>
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">Description</span>
-                            <span className="label-required">*</span>
-                          </label>
-                          <textarea
-                            name="description"
-                            required
-                            className="enterprise-textarea"
-                            placeholder="Describe what this pipeline validates and its purpose..."
-                          ></textarea>
-                        </div>
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="auto_trigger" />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Auto-trigger on dataset upload</span>
-                              <span className="checkbox-description">Automatically execute this pipeline when new datasets are uploaded</span>
-                            </div>
-                          </label>
-                        </div>
+                      <div className="header-actions">
+                        <button
+                          className="enterprise-btn enterprise-btn-primary"
+                          onClick={() => setSelectedPipeline('create')}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                          </svg>
+                          Create New Pipeline
+                        </button>
                       </div>
                     </div>
 
-                    <div className="form-section">
-                      <div className="section-header">
-                        <h4>Privacy Configuration</h4>
-                        <p>Configure data masking and anonymization settings</p>
-                      </div>
-                      <div className="form-grid">
-                        <div className="privacy-grid">
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="mask_emails" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Mask Email Addresses</span>
+                    <div className="enterprise-pipelines-grid">
+                      {pipelines.map((pipeline) => (
+                        <div key={pipeline.id} className="enterprise-pipeline-card">
+                          <div className="pipeline-card-header">
+                            <div className="pipeline-info">
+                              <h4>{pipeline.name}</h4>
+                              <p>{pipeline.description}</p>
                             </div>
-                          </label>
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="mask_names" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Mask Names</span>
+                            <div className="pipeline-status">
+                              <span className={`enterprise-status-badge ${pipeline.active ? 'active' : 'inactive'}`}>
+                                {pipeline.active ? 'Active' : 'Inactive'}
+                              </span>
                             </div>
-                          </label>
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="mask_phone_numbers" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Mask Phone Numbers</span>
-                            </div>
-                          </label>
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="mask_addresses" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Mask Addresses</span>
-                            </div>
-                          </label>
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="mask_ssn" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Mask SSN</span>
-                            </div>
-                          </label>
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="use_gan" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Use GAN Generation</span>
-                            </div>
-                          </label>
-                        </div>
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">GAN Training Epochs</span>
-                          </label>
-                          <input
-                            type="number"
-                            name="gan_epochs"
-                            min="10"
-                            max="500"
-                            defaultValue="100"
-                            className="enterprise-input"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="form-section">
-                      <div className="section-header">
-                        <h4>Quality Gates</h4>
-                        <p>Set minimum quality thresholds for pipeline success</p>
-                      </div>
-                      <div className="form-grid">
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">Minimum Overall Quality Score</span>
-                            <span className="label-required">*</span>
-                          </label>
-                          <div className="input-with-unit">
-                            <input
-                              type="number"
-                              name="min_quality"
-                              min="0"
-                              max="100"
-                              defaultValue="60"
-                              className="enterprise-input"
-                              placeholder="60"
-                            />
-                            <span className="input-unit">%</span>
                           </div>
-                          <div className="form-help">Pipeline will fail if synthetic data quality falls below this threshold</div>
-                        </div>
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-checkbox">
-                            <input type="checkbox" name="allow_missing_columns" defaultChecked />
-                            <span className="checkmark"></span>
-                            <div className="checkbox-content">
-                              <span className="checkbox-label">Allow Missing Columns</span>
-                              <span className="checkbox-description">Permit generation even if some columns are missing</span>
+
+                          <div className="pipeline-metrics-enterprise">
+                            <div className="metric">
+                              <div className="metric-icon">🎯</div>
+                              <div className="metric-content">
+                                <span className="metric-label">Quality Gate</span>
+                                <span className="metric-value">
+                                  {pipeline.quality_gate?.min_overall_quality ?? 60}%
+                                </span>
+                              </div>
                             </div>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
+                            <div className="metric">
+                              <div className="metric-icon">⚡</div>
+                              <div className="metric-content">
+                                <span className="metric-label">Auto-trigger</span>
+                                <span className="metric-value">{pipeline.auto_trigger_on_upload ? 'ON' : 'OFF'}</span>
+                              </div>
+                            </div>
+                          </div>
 
-                    <div className="form-section">
-                      <div className="section-header">
-                        <h4>Export Configuration</h4>
-                        <p>Configure where generated artifacts are stored</p>
-                      </div>
-                      <div className="form-grid">
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">Export Type</span>
-                          </label>
-                          <select name="export_type" className="enterprise-select" defaultValue="local">
-                            <option value="local">Local Storage</option>
-                            <option value="s3">Amazon S3</option>
-                            <option value="gcs">Google Cloud Storage</option>
-                            <option value="azure">Azure Blob Storage</option>
-                          </select>
+                          <div className="pipeline-actions-enterprise">
+                            <button
+                              className="enterprise-btn enterprise-btn-secondary"
+                              onClick={() => handleRunPipeline(pipeline.id, selectedDataset?.id)}
+                              disabled={!selectedDataset}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M3 2L13 8L3 14V2Z" fill="currentColor" />
+                              </svg>
+                              Execute Pipeline
+                            </button>
+                            <button className="enterprise-btn enterprise-btn-outline">
+                              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 2H4C2.9 2 2 2.9 2 4V12C2 13.1 2.9 14 4 14H12C13.1 14 14 13.1 14 12V4C14 2.9 13.1 2 12 2Z" stroke="currentColor" strokeWidth="1.5" />
+                                <path d="M6 6H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                <path d="M6 8H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                              </svg>
+                              Configure
+                            </button>
+                          </div>
                         </div>
-                        <div className="form-group-enterprise">
-                          <label className="enterprise-label">
-                            <span className="label-text">Export Path/Bucket</span>
-                          </label>
-                          <input
-                            type="text"
-                            name="export_path"
-                            className="enterprise-input"
-                            defaultValue="artifacts"
-                            placeholder="artifacts"
-                          />
+                      ))}
+                      {pipelines.length === 0 && (
+                        <div className="enterprise-empty-state">
+                          <div className="empty-icon">
+                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M24 4L44 14L24 24L4 14L24 4Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M4 28L24 38L44 28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M4 18L24 28L44 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </div>
+                          <h4>No Pipelines Created</h4>
+                          <p>Create your first pipeline to automate synthetic data generation with quality gates</p>
+                          <button
+                            className="enterprise-btn enterprise-btn-primary"
+                            onClick={() => setSelectedPipeline('create')}
+                          >
+                            Create Your First Pipeline
+                          </button>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
+                )}
 
-                  <div className="form-actions-enterprise">
-                    <button type="submit" className="enterprise-btn enterprise-btn-primary enterprise-btn-large">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M13.5 2L6 9.5L2.5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                      Create Pipeline
-                    </button>
-                    <button
-                      type="button"
-                      className="enterprise-btn enterprise-btn-secondary"
-                      onClick={() => setSelectedPipeline(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {selectedPipeline === 'runs' && (
-            <div className="enterprise-section">
-              <div className="section-header-enterprise">
-                <div className="header-left">
-                  <h3>Execution History</h3>
-                  <p>Monitor pipeline runs and their performance metrics</p>
-                </div>
-              </div>
-
-              <div className="enterprise-runs-container">
-                {pipelineRuns.map(run => (
-                  <div key={run.id} className="enterprise-run-card">
-                    <div className="run-card-header">
-                      <div className="run-info">
-                        <div className="run-id">#{run.id.slice(0, 8)}</div>
-                        <div className="run-details">
-                          <span>Pipeline: {run.pipeline_id?.slice(0, 8)}</span>
-                          <span>Dataset: {run.dataset_id?.slice(0, 8)}</span>
-                        </div>
+                {selectedPipeline === 'create' && (
+                  <div className="enterprise-section">
+                    <div className="section-header-enterprise">
+                      <div className="header-left">
+                        <h3>Create New Pipeline</h3>
+                        <p>Configure an enterprise-grade automated data generation pipeline</p>
                       </div>
-                      <div className="run-status-container">
-                        <span className={`enterprise-run-status ${run.status}`}>
-                          {run.status}
-                        </span>
-                        <div className="run-time">
-                          {new Date(run.started_at).toLocaleString()}
-                        </div>
+                      <div className="header-actions">
+                        <button
+                          className="enterprise-btn enterprise-btn-secondary"
+                          onClick={() => setSelectedPipeline(null)}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                          </svg>
+                          Cancel
+                        </button>
                       </div>
                     </div>
 
-                    {run.progress > 0 && (
-                      <div className="run-progress-container">
-                        <div className="progress-header">
-                          <span>Progress</span>
-                          <span>{run.progress}%</span>
-                        </div>
-                        <div className="enterprise-progress-bar">
-                          <div
-                            className="enterprise-progress-fill"
-                            style={{ width: `${run.progress}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    )}
+                    <div className="enterprise-form-container">
+                      <form onSubmit={(e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.target);
+                        const pipelineData = {
+                          name: formData.get('name'),
+                          description: formData.get('description'),
+                          auto_trigger_on_upload: !!formData.get('auto_trigger'),
+                          default_privacy: {
+                            mask_emails: !!formData.get('mask_emails'),
+                            mask_names: !!formData.get('mask_names'),
+                            mask_phone_numbers: !!formData.get('mask_phone_numbers'),
+                            mask_addresses: !!formData.get('mask_addresses'),
+                            mask_ssn: !!formData.get('mask_ssn'),
+                            custom_fields: [],
+                            use_gan: !!formData.get('use_gan'),
+                            gan_epochs: parseInt(formData.get('gan_epochs') || '100'),
+                            anonymization_method: 'faker'
+                          },
+                          quality_gate: {
+                            min_overall_quality: parseFloat(formData.get('min_quality') || '60'),
+                            allow_missing_columns: !!formData.get('allow_missing_columns')
+                          },
+                          export_target: {
+                            type: formData.get('export_type') || 'local',
+                            path: formData.get('export_path') || 'artifacts'
+                          },
+                          active: true
+                        };
+                        handleCreatePipeline(pipelineData);
+                      }}>
+                        <div className="form-sections">
+                          <div className="form-section">
+                            <div className="section-header">
+                              <h4>Basic Configuration</h4>
+                              <p>Define your pipeline name and behavior</p>
+                            </div>
+                            <div className="form-grid">
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">Pipeline Name</span>
+                                  <span className="label-required">*</span>
+                                </label>
+                                <input
+                                  type="text"
+                                  name="name"
+                                  required
+                                  className="enterprise-input"
+                                  placeholder="e.g., Production Quality Pipeline"
+                                />
+                              </div>
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">Description</span>
+                                  <span className="label-required">*</span>
+                                </label>
+                                <textarea
+                                  name="description"
+                                  required
+                                  className="enterprise-textarea"
+                                  placeholder="Describe what this pipeline validates and its purpose..."
+                                ></textarea>
+                              </div>
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="auto_trigger" />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Auto-trigger on dataset upload</span>
+                                    <span className="checkbox-description">Automatically execute this pipeline when new datasets are uploaded</span>
+                                  </div>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
 
-                    {run.message && (
-                      <div className="run-message-container">
-                        <span className="run-message">{run.message}</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {pipelineRuns.length === 0 && (
-                  <div className="enterprise-empty-state">
-                    <div className="empty-icon">
-                      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2"/>
-                      </svg>
+                          <div className="form-section">
+                            <div className="section-header">
+                              <h4>Privacy Configuration</h4>
+                              <p>Configure data masking and anonymization settings</p>
+                            </div>
+                            <div className="form-grid">
+                              <div className="privacy-grid">
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="mask_emails" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Mask Email Addresses</span>
+                                  </div>
+                                </label>
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="mask_names" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Mask Names</span>
+                                  </div>
+                                </label>
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="mask_phone_numbers" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Mask Phone Numbers</span>
+                                  </div>
+                                </label>
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="mask_addresses" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Mask Addresses</span>
+                                  </div>
+                                </label>
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="mask_ssn" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Mask SSN</span>
+                                  </div>
+                                </label>
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="use_gan" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Use GAN Generation</span>
+                                  </div>
+                                </label>
+                              </div>
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">GAN Training Epochs</span>
+                                </label>
+                                <input
+                                  type="number"
+                                  name="gan_epochs"
+                                  min="10"
+                                  max="500"
+                                  defaultValue="100"
+                                  className="enterprise-input"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="form-section">
+                            <div className="section-header">
+                              <h4>Quality Gates</h4>
+                              <p>Set minimum quality thresholds for pipeline success</p>
+                            </div>
+                            <div className="form-grid">
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">Minimum Overall Quality Score</span>
+                                  <span className="label-required">*</span>
+                                </label>
+                                <div className="input-with-unit">
+                                  <input
+                                    type="number"
+                                    name="min_quality"
+                                    min="0"
+                                    max="100"
+                                    defaultValue="60"
+                                    className="enterprise-input"
+                                    placeholder="60"
+                                  />
+                                  <span className="input-unit">%</span>
+                                </div>
+                                <div className="form-help">Pipeline will fail if synthetic data quality falls below this threshold</div>
+                              </div>
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-checkbox">
+                                  <input type="checkbox" name="allow_missing_columns" defaultChecked />
+                                  <span className="checkmark"></span>
+                                  <div className="checkbox-content">
+                                    <span className="checkbox-label">Allow Missing Columns</span>
+                                    <span className="checkbox-description">Permit generation even if some columns are missing</span>
+                                  </div>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="form-section">
+                            <div className="section-header">
+                              <h4>Export Configuration</h4>
+                              <p>Configure where generated artifacts are stored</p>
+                            </div>
+                            <div className="form-grid">
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">Export Type</span>
+                                </label>
+                                <select name="export_type" className="enterprise-select" defaultValue="local">
+                                  <option value="local">Local Storage</option>
+                                  <option value="s3">Amazon S3</option>
+                                  <option value="gcs">Google Cloud Storage</option>
+                                  <option value="azure">Azure Blob Storage</option>
+                                </select>
+                              </div>
+                              <div className="form-group-enterprise">
+                                <label className="enterprise-label">
+                                  <span className="label-text">Export Path/Bucket</span>
+                                </label>
+                                <input
+                                  type="text"
+                                  name="export_path"
+                                  className="enterprise-input"
+                                  defaultValue="artifacts"
+                                  placeholder="artifacts"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="form-actions-enterprise">
+                          <button type="submit" className="enterprise-btn enterprise-btn-primary enterprise-btn-large">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M13.5 2L6 9.5L2.5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                            Create Pipeline
+                          </button>
+                          <button
+                            type="button"
+                            className="enterprise-btn enterprise-btn-secondary"
+                            onClick={() => setSelectedPipeline(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
                     </div>
-                    <h4>No Pipeline Runs</h4>
-                    <p>Execute a pipeline to see run history and performance metrics here</p>
+                  </div>
+                )}
+
+                {selectedPipeline === 'runs' && (
+                  <div className="enterprise-section">
+                    <div className="section-header-enterprise">
+                      <div className="header-left">
+                        <h3>Execution History</h3>
+                        <p>Monitor pipeline runs and their performance metrics</p>
+                      </div>
+                    </div>
+
+                    <div className="enterprise-runs-container">
+                      {pipelineRuns.map((run) => (
+                        <div key={run.id} className="enterprise-run-card">
+                          <div className="run-card-header">
+                            <div className="run-info">
+                              <div className="run-id">#{run.id.slice(0, 8)}</div>
+                              <div className="run-details">
+                                <span>Pipeline: {run.pipeline_id?.slice(0, 8)}</span>
+                                <span>Dataset: {run.dataset_id?.slice(0, 8)}</span>
+                              </div>
+                            </div>
+                            <div className="run-status-container">
+                              <span className={`enterprise-run-status ${run.status}`}>
+                                {run.status}
+                              </span>
+                              <div className="run-time">
+                                {run.started_at ? new Date(run.started_at).toLocaleString() : ''}
+                              </div>
+                            </div>
+                          </div>
+
+                          {run.progress > 0 && (
+                            <div className="run-progress-container">
+                              <div className="progress-header">
+                                <span>Progress</span>
+                                <span>{run.progress}%</span>
+                              </div>
+                              <div className="enterprise-progress-bar">
+                                <div
+                                  className="enterprise-progress-fill"
+                                  style={{ width: `${run.progress}%` }}
+                                ></div>
+                              </div>
+                            </div>
+                          )}
+
+                          {run.message && (
+                            <div className="run-message-container">
+                              <span className="run-message">{run.message}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {pipelineRuns.length === 0 && (
+                        <div className="enterprise-empty-state">
+                          <div className="empty-icon">
+                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M8 1V15M1 8H15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                          </div>
+                          <h4>No Pipeline Runs</h4>
+                          <p>Execute a pipeline to see run history and performance metrics here</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-          )}
+          </div>
         </div>
-      </div>
-    </div>
-  </div>
-)}
-
+      )}
       <DebugPanel
         selectedDataset={selectedDataset}
         currentStep={currentStep}
